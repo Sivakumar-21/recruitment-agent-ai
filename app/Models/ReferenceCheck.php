@@ -6,27 +6,29 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
-class Interview extends Model
+class ReferenceCheck extends Model
 {
     use HasFactory;
 
     protected $fillable = [
+        'candidate_id',
         'candidate_score_id',
-        'interviewer_name',
-        'interviewer_email',
-        'scheduled_at',
-        'meeting_link',
+        'reference_name',
+        'reference_relationship',
+        'email',
         'status',
-        'notes',
+        'feedback_text',
         'evaluation',
-        'video_evaluation',
     ];
 
     protected $casts = [
-        'scheduled_at' => 'datetime',
         'evaluation' => 'array',
-        'video_evaluation' => 'array',
     ];
+
+    public function candidate(): BelongsTo
+    {
+        return $this->belongsTo(Candidate::class);
+    }
 
     public function candidateScore(): BelongsTo
     {

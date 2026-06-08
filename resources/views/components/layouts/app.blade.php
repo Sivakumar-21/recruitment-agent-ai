@@ -28,6 +28,11 @@
                 </div>
                 <div class="logo-text">Recruit<span>Agent</span></div>
             </a>
+
+            <nav style="display: flex; gap: 1.5rem; margin-left: 2.5rem; align-items: center; flex-grow: 1;">
+                <a href="/" style="color: {{ request()->is('/') ? 'var(--accent)' : 'var(--text-muted)' }}; text-decoration: none; font-size: 0.95rem; font-weight: 600; transition: color 0.2s;" onmouseover="this.style.color='var(--accent)'" onmouseout="this.style.color='{{ request()->is('/') ? 'var(--accent)' : 'var(--text-muted)' }}'">💼 Jobs</a>
+                <a href="/dashboard" style="color: {{ request()->is('dashboard') ? 'var(--accent)' : 'var(--text-muted)' }}; text-decoration: none; font-size: 0.95rem; font-weight: 600; transition: color 0.2s;" onmouseover="this.style.color='var(--accent)'" onmouseout="this.style.color='{{ request()->is('dashboard') ? 'var(--accent)' : 'var(--text-muted)' }}'">📊 Analytics Dashboard</a>
+            </nav>
             
             <div style="display: flex; align-items: center; gap: 1rem;">
                 @if(!$isAiConfigured)

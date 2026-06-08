@@ -51,6 +51,8 @@ class ProcessResumeJob implements ShouldQueue
             return;
         }
 
+        $orchestrator = app(\App\Services\AgentOrchestrator::class);
+
         try {
             // Get absolute path of the uploaded file
             $filePath = Storage::path($this->candidate->resume_path);
@@ -61,33 +63,31 @@ class ProcessResumeJob implements ShouldQueue
             }
 
             // 1. Parse document text
-            Log::info("ProcessResumeJob [Step 1/4]: Extracting text from document using DocumentParserService...");
-            $step1Start = microtime(true);
-            $text = $parser->parse($filePath);
-            if (empty(trim($text))) {
-                throw new Exception("Parsed resume text is empty or could not be extracted.");
-            }
-            $step1Duration = round(microtime(true) - $step1Start, 3);
-            Log::info("ProcessResumeJob [Step 1/4]: Text extraction complete in {$step1Duration}s. Character length: " . strlen($text));
+            $text = $orchestrator->execute('Resume Parser - Text Extraction', $this->candidate->id, $this->recruitmentJob->id, function() use ($parser, $filePath) {
+                Log::info("ProcessResumeJob [Step 1/4]: Extracting text from document using DocumentParserService...");
+                $text = $parser->parse($filePath);
+                if (empty(trim($text))) {
+                    throw new Exception("Parsed resume text is empty or could not be extracted.");
+                }
+                return $text;
+            });
 
             // Update candidate's raw text
             $this->candidate->update(['resume_text' => $text]);
             Log::debug("ProcessResumeJob: Candidate resume_text field updated in database.");
 
             // 2. Generate Vector Embedding for candidate resume text
-            Log::info("ProcessResumeJob [Step 2/4]: Generating OpenAI embeddings for text...");
-            $step2Start = microtime(true);
-            $embedding = $openai->generateEmbedding($text);
+            $embedding = $orchestrator->execute('Embedding Generator', $this->candidate->id, $this->recruitmentJob->id, function() use ($openai, $text) {
+                Log::info("ProcessResumeJob [Step 2/4]: Generating OpenAI embeddings for text...");
+                return $openai->generateEmbedding($text);
+            });
             $this->candidate->update(['embedding' => $embedding]);
-            $step2Duration = round(microtime(true) - $step2Start, 3);
-            Log::info("ProcessResumeJob [Step 2/4]: Embeddings generated in {$step2Duration}s. Vector length: " . count($embedding) . " dimensions.");
 
             // 3. Parse resume with Resume Parsing Agent
-            Log::info("ProcessResumeJob [Step 3/4]: Invoking Resume Parser Agent...");
-            $step3Start = microtime(true);
-            $parsedData = $openai->parseResume($text);
-            $step3Duration = round(microtime(true) - $step3Start, 3);
-            Log::info("ProcessResumeJob [Step 3/4]: Resume Parser completed in {$step3Duration}s. Extracted candidate details: [Name: " . ($parsedData['name'] ?? 'N/A') . ", Email: " . ($parsedData['email'] ?? 'N/A') . ", Experience: " . ($parsedData['experience_years'] ?? '0') . " years]");
+            $parsedData = $orchestrator->execute('Resume Parser - Structuring', $this->candidate->id, $this->recruitmentJob->id, function() use ($openai, $text) {
+                Log::info("ProcessResumeJob [Step 3/4]: Invoking Resume Parser Agent...");
+                return $openai->parseResume($text);
+            });
             
             // Update candidate details from parsed data (with Versioning & Duplicate Rejection)
             $email = $parsedData['email'] ?? null;
@@ -163,6 +163,12 @@ class ProcessResumeJob implements ShouldQueue
                         'Resume Version Updated',
                         "Uploaded new resume version (v{$newVersion}) for {$parsedData['name']} (email: {$email}) on job: {$this->recruitmentJob->title}"
                     );
+                    \App\Models\CandidateActivity::logActivity(
+                        $this->candidate->id,
+                        $this->recruitmentJob->id,
+                        'resume_uploaded',
+                        "Uploaded new resume version (v{$newVersion}) for job: {$this->recruitmentJob->title}"
+                    );
 
                     Log::info("ProcessResumeJob: Modified resume detected for email '{$email}' on Job ID {$this->recruitmentJob->id}. Incremented to v{$newVersion}.");
 
@@ -187,6 +193,12 @@ class ProcessResumeJob implements ShouldQueue
                         'Resume Uploaded',
                         "Uploaded candidate resume for {$parsedData['name']} (email: {$email}) on job: {$this->recruitmentJob->title}"
                     );
+                    \App\Models\CandidateActivity::logActivity(
+                        $this->candidate->id,
+                        $this->recruitmentJob->id,
+                        'resume_uploaded',
+                        "Uploaded initial resume for job: {$this->recruitmentJob->title}"
+                    );
                 }
             } else {
                 // Email not parsed, treat as standard version 1
@@ -208,6 +220,12 @@ class ProcessResumeJob implements ShouldQueue
                     'Resume Uploaded',
                     "Uploaded candidate resume for {$this->candidate->name} on job: {$this->recruitmentJob->title}"
                 );
+                \App\Models\CandidateActivity::logActivity(
+                    $this->candidate->id,
+                    $this->recruitmentJob->id,
+                    'resume_uploaded',
+                    "Uploaded candidate resume for job: {$this->recruitmentJob->title}"
+                );
             }
             Log::debug("ProcessResumeJob: Candidate parsed_data fields and versioning updated in database.");
 
@@ -215,9 +233,10 @@ class ProcessResumeJob implements ShouldQueue
             // If the job has not been analyzed yet, analyze it now
             $jobAnalysis = $this->recruitmentJob->parsed_analysis;
             if (empty($jobAnalysis)) {
-                Log::info("ProcessResumeJob: Target job analysis cache is empty. Analyzing job description first...");
-                $stepJobStart = microtime(true);
-                $jobAnalysis = $openai->analyzeJob($this->recruitmentJob->description);
+                $jobAnalysis = $orchestrator->execute('Job Analyzer', null, $this->recruitmentJob->id, function() use ($openai) {
+                    Log::info("ProcessResumeJob: Target job analysis cache is empty. Analyzing job description first...");
+                    return $openai->analyzeJob($this->recruitmentJob->description);
+                });
                 $this->recruitmentJob->update([
                     'title' => $jobAnalysis['title'] ?? $this->recruitmentJob->title,
                     'required_skills' => $jobAnalysis['required_skills'] ?? [],
@@ -225,15 +244,13 @@ class ProcessResumeJob implements ShouldQueue
                     'experience_years' => $jobAnalysis['experience_years'] ?? 0,
                     'parsed_analysis' => $jobAnalysis,
                 ]);
-                $stepJobDuration = round(microtime(true) - $stepJobStart, 3);
-                Log::info("ProcessResumeJob: Job description parsed in {$stepJobDuration}s. Title: '{$this->recruitmentJob->title}', Required Skills: [" . implode(', ', $this->recruitmentJob->required_skills) . "]");
             }
 
             // Evaluate the match
-            Log::info("ProcessResumeJob [Step 4/4]: Matching candidate against job profile requirements...");
-            $step4Start = microtime(true);
-            $matchResult = $openai->matchAndAnalyze($jobAnalysis, $parsedData);
-            $step4Duration = round(microtime(true) - $step4Start, 3);
+            $matchResult = $orchestrator->execute('Matcher & Scoring', $this->candidate->id, $this->recruitmentJob->id, function() use ($openai, $jobAnalysis, $parsedData) {
+                Log::info("ProcessResumeJob [Step 4/4]: Matching candidate against job profile requirements...");
+                return $openai->matchAndAnalyze($jobAnalysis, $parsedData);
+            });
 
             // Update the candidate score record
             $candidateScore->update([
@@ -247,35 +264,108 @@ class ProcessResumeJob implements ShouldQueue
                     'strengths' => $matchResult['strengths'] ?? [],
                     'concerns' => $matchResult['concerns'] ?? [],
                     'interview_questions' => $matchResult['interview_questions'] ?? [],
+                    'confidence_score' => $matchResult['confidence_score'] ?? 0.85,
+                    'explainability' => $matchResult['explainability'] ?? [
+                        'missing_skills' => array_values(array_diff(
+                            array_map('strtolower', $this->recruitmentJob->required_skills ?? []),
+                            array_map('strtolower', $parsedData['skills'] ?? [])
+                        )),
+                        'experience_required' => $this->recruitmentJob->experience_years,
+                        'experience_found' => $parsedData['experience_years'] ?? 0
+                    ]
                 ],
                 'status' => 'completed',
             ]);
+
+            // 5. GitHub Profile Analysis Agent
+            $githubData = null;
+            $githubUrl = $parsedData['github_url'] ?? null;
+            if ($githubUrl && $githubUrl !== 'Not specified') {
+                $githubData = $orchestrator->execute('GitHub Analyzer', $this->candidate->id, $this->recruitmentJob->id, function() use ($openai, $parsedData, $githubUrl) {
+                    Log::info("ProcessResumeJob [Step 5/6]: Analyzing candidate GitHub activity...");
+                    return $openai->analyzeGithubProfile($this->candidate->name, $parsedData['skills'] ?? [], $githubUrl, $parsedData['work_experience'] ?? null);
+                });
+            }
+            $this->candidate->update(['github_analysis' => $githubData]);
+
+            // 6. LinkedIn Profile Analysis Agent
+            $linkedinData = null;
+            $linkedinUrl = $parsedData['linkedin_url'] ?? null;
+            if ($linkedinUrl && $linkedinUrl !== 'Not specified') {
+                $linkedinData = $orchestrator->execute('LinkedIn Intelligence', $this->candidate->id, $this->recruitmentJob->id, function() use ($openai, $parsedData, $linkedinUrl) {
+                    Log::info("ProcessResumeJob [Step 6/6]: Analyzing candidate LinkedIn career growth...");
+                    return $openai->analyzeLinkedInProfile(
+                        $this->candidate->name, 
+                        $parsedData['skills'] ?? [], 
+                        $linkedinUrl, 
+                        $parsedData['work_experience'] ?? null, 
+                        $parsedData['education'] ?? null
+                    );
+                });
+            }
+            $this->candidate->update(['linkedin_analysis' => $linkedinData]);
+
+            \App\Models\CandidateActivity::logActivity(
+                $this->candidate->id,
+                $this->recruitmentJob->id,
+                'profile_evaluated',
+                "AI profile evaluation completed. Match score: {$candidateScore->score}%. Recommendation: {$candidateScore->recommendation}"
+            );
 
             // Run Agent 1: Auto Shortlisting Agent
             $scoreVal = $candidateScore->score;
             $emailService = app(\App\Services\EmailCommunicationService::class);
 
-            if ($scoreVal > 85) {
-                $candidateScore->update([
-                    'candidate_status' => 'Shortlisted',
-                    'status_updated_at' => now(),
-                ]);
-                $emailService->sendShortlistEmail($candidateScore);
-                Log::info("Auto Shortlisting Agent: Candidate ID {$this->candidate->id} automatically SHORTLISTED (Score: {$scoreVal}%)");
-            } elseif ($scoreVal >= 70) {
-                $candidateScore->update([
-                    'candidate_status' => 'Screening', // Human Review
-                    'status_updated_at' => now(),
-                ]);
-                Log::info("Auto Shortlisting Agent: Candidate ID {$this->candidate->id} routed to HUMAN REVIEW (Score: {$scoreVal}%)");
-            } else {
-                $candidateScore->update([
-                    'candidate_status' => 'Rejected',
-                    'status_updated_at' => now(),
-                ]);
-                $emailService->sendRejectionEmail($candidateScore);
-                Log::info("Auto Shortlisting Agent: Candidate ID {$this->candidate->id} automatically REJECTED (Score: {$scoreVal}%)");
-            }
+            $orchestrator->execute('Auto-Shortlisting', $this->candidate->id, $this->recruitmentJob->id, function() use ($candidateScore, $scoreVal, $emailService) {
+                if ($scoreVal >= 80) {
+                    $candidateScore->update([
+                        'candidate_status' => 'Shortlisted',
+                        'status_updated_at' => now(),
+                    ]);
+                    $emailService->sendShortlistEmail($candidateScore);
+                    \App\Models\CandidateActivity::logActivity(
+                        $this->candidate->id,
+                        $this->recruitmentJob->id,
+                        'auto_shortlisted',
+                        "Automatically shortlisted with score {$scoreVal}%. Outreach invite email sent."
+                    );
+                    Log::info("Auto Shortlisting Agent: Candidate ID {$this->candidate->id} automatically SHORTLISTED (Score: {$scoreVal}%)");
+                } elseif ($scoreVal >= 65) {
+                    $candidateScore->update([
+                        'candidate_status' => 'Screening', // Human Review
+                        'status_updated_at' => now(),
+                    ]);
+                    \App\Models\CandidateActivity::logActivity(
+                        $this->candidate->id,
+                        $this->recruitmentJob->id,
+                        'routed_to_screening',
+                        "Routed to manual screening/human review with score {$scoreVal}%."
+                    );
+                    Log::info("Auto Shortlisting Agent: Candidate ID {$this->candidate->id} routed to HUMAN REVIEW (Score: {$scoreVal}%)");
+                } else {
+                    // Human Approval Gate: Instead of auto-rejecting directly, hold for approval
+                    \App\Models\ApprovalRequest::create([
+                        'action_type' => 'auto_reject',
+                        'target_type' => \App\Models\CandidateScore::class,
+                        'target_id' => $candidateScore->id,
+                        'status' => 'pending',
+                        'requester_notes' => "Candidate scored {$scoreVal}% (below 65% rejection threshold). Rejection held for approval.",
+                    ]);
+
+                    $candidateScore->update([
+                        'candidate_status' => 'Screening',
+                        'status_updated_at' => now(),
+                    ]);
+
+                    \App\Models\CandidateActivity::logActivity(
+                        $this->candidate->id,
+                        $this->recruitmentJob->id,
+                        'auto_reject_held',
+                        "Auto-rejection held pending recruiter approval. Match score: {$scoreVal}%."
+                    );
+                    Log::info("Human Approval Agent: Candidate ID {$this->candidate->id} auto-rejection held for approval (Score: {$scoreVal}%)");
+                }
+            });
 
             $totalJobDuration = round(microtime(true) - $jobStartTime, 3);
             Log::info("ProcessResumeJob: Evaluation completed successfully in {$totalJobDuration}s. Results: [Score: {$candidateScore->score}%, Grade: {$candidateScore->recommendation}]");

@@ -853,12 +853,206 @@
                                     @endif
                                 </div>
                             </div>
-                            <div style="margin-top: 0.5rem;">
+                            <div style="margin-top: 1rem;">
                                 <strong style="color: #cbd5e1; display: block; margin-bottom: 0.4rem;">Candidate Resume File:</strong>
-                                <code style="background: rgba(255,255,255,0.05); padding: 0.3rem 0.5rem; border-radius: 4px; font-size: 0.8rem; word-break: break-all;">
-                                    {{ $selectedCandidateScore->candidate->resume_path }}
-                                </code>
+                                <div style="display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; background: rgba(255,255,255,0.05); padding: 0.4rem 0.6rem; border-radius: 6px; border: 1px solid rgba(255,255,255,0.08);">
+                                    <code style="font-size: 0.8rem; word-break: break-all; color: var(--accent); font-weight: 500;">
+                                        {{ basename($selectedCandidateScore->candidate->resume_path) }}
+                                    </code>
+                                    <div style="display: flex; gap: 0.35rem; flex-shrink: 0;">
+                                        <button type="button" wire:click="toggleResumePreview" class="btn btn-secondary" style="padding: 0.25rem 0.5rem; font-size: 0.75rem; font-weight: 600;">
+                                            {{ $showResumePreview ? 'Hide Preview' : 'Show Preview' }}
+                                        </button>
+                                        <a href="{{ route('candidate.resume', $selectedCandidateScore->candidate->id) }}" target="_blank" class="btn btn-secondary" style="padding: 0.25rem 0.5rem; font-size: 0.75rem; font-weight: 600; text-decoration: none; display: inline-flex; align-items: center; gap: 0.2rem;">
+                                            Open ↗
+                                        </a>
+                                    </div>
+                                </div>
+                                
+                                @if($showResumePreview)
+                                    @php
+                                        $resumePath = $selectedCandidateScore->candidate->resume_path;
+                                        $isPdf = str_ends_with(strtolower($resumePath), '.pdf');
+                                    @endphp
+                                    <div style="margin-top: 0.75rem; border: 1px solid var(--card-border); border-radius: 8px; overflow: hidden; background: #0f172a; box-shadow: inset 0 2px 8px rgba(0,0,0,0.5);">
+                                        @if($isPdf)
+                                            <iframe src="{{ route('candidate.resume', $selectedCandidateScore->candidate->id) }}" style="width: 100%; height: 550px; border: none; display: block;"></iframe>
+                                        @else
+                                            <div style="padding: 1rem; max-height: 400px; overflow-y: auto;">
+                                                <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid rgba(255,255,255,0.08); padding-bottom: 0.5rem; margin-bottom: 0.75rem;">
+                                                    <span style="font-size: 0.75rem; color: var(--text-muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;">DOCX Content Preview (Raw Text)</span>
+                                                    <a href="{{ route('candidate.resume', $selectedCandidateScore->candidate->id) }}" download class="btn btn-primary" style="padding: 0.25rem 0.6rem; font-size: 0.75rem; font-weight: 600; text-decoration: none; display: inline-flex; align-items: center; gap: 0.2rem;">
+                                                        📥 Download
+                                                    </a>
+                                                </div>
+                                                <pre style="white-space: pre-wrap; font-family: 'Courier New', Courier, monospace; font-size: 0.8rem; color: #e2e8f0; margin: 0; line-height: 1.6; text-align: left;">{{ $selectedCandidateScore->candidate->resume_text ?: 'No resume text available.' }}</pre>
+                                            </div>
+                                        @endif
+                                    </div>
+                                @endif
                             </div>
+
+                            <!-- Developer Activity & LinkedIn Insights -->
+                            @if($selectedCandidateScore->candidate->github_analysis)
+                                @php
+                                    $gh = $selectedCandidateScore->candidate->github_analysis;
+                                    $ghUser = $gh['username'] ?? '';
+                                    $ghLink = 'https://github.com/' . trim($ghUser, '@ ');
+                                @endphp
+                                <div style="margin-top: 1.5rem; border: 1px solid var(--card-border); border-radius: 12px; padding: 1.25rem; background: rgba(15, 23, 42, 0.4); box-shadow: 0 4px 20px rgba(0,0,0,0.15); backdrop-filter: blur(10px);">
+                                    <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 1rem; border-bottom: 1px solid rgba(255,255,255,0.08); padding-bottom: 0.75rem;">
+                                        <h4 style="margin: 0; color: #38bdf8; font-size: 0.85rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; display: flex; align-items: center; gap: 0.5rem;">
+                                            💻 Developer Activity (GitHub Analyzer)
+                                        </h4>
+                                        @if(isset($gh['contribution_score']))
+                                            <span style="background: rgba(16, 185, 129, 0.1); border: 1px solid rgba(16, 185, 129, 0.25); color: #10b981; font-weight: 700; font-size: 0.7rem; padding: 0.2rem 0.5rem; border-radius: 20px; text-transform: uppercase; letter-spacing: 0.05em;">
+                                                SCORE: {{ $gh['contribution_score'] }}/100
+                                            </span>
+                                        @endif
+                                    </div>
+                                    
+                                    <div style="font-size: 0.85rem; color: #cbd5e1; display: flex; flex-direction: column; gap: 0.75rem;">
+                                        @if($ghUser)
+                                            <div style="display: flex; align-items: center; gap: 0.4rem;">
+                                                <strong style="color: #94a3b8;">GitHub Handle:</strong>
+                                                <a href="{{ $ghLink }}" target="_blank" style="color: #38bdf8; text-decoration: underline; font-weight: 600; display: inline-flex; align-items: center; gap: 0.2rem;">
+                                                    🔗 {{ $ghUser }}
+                                                </a>
+                                            </div>
+                                        @endif
+                                        
+                                        @if(isset($gh['total_commits']))
+                                            <div>
+                                                <strong style="color: #94a3b8;">Commits (Past Year):</strong>
+                                                <span style="font-weight: 600; color: #f8fafc; margin-left: 0.25rem;">{{ $gh['total_commits'] }}</span>
+                                            </div>
+                                        @endif
+                                        
+                                        @if(!empty($gh['languages']))
+                                            <div>
+                                                <strong style="color: #94a3b8; display: block; margin-bottom: 0.4rem; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;">Languages:</strong>
+                                                <div style="display: flex; flex-wrap: wrap; gap: 0.4rem;">
+                                                    @foreach($gh['languages'] as $lang => $pct)
+                                                        <span style="background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); padding: 0.2rem 0.5rem; border-radius: 4px; font-size: 0.72rem; color: #cbd5e1; font-family: monospace;">
+                                                            {{ $lang }}: {{ $pct }}%
+                                                        </span>
+                                                    @endforeach
+                                                </div>
+                                            </div>
+                                        @endif
+                                        
+                                        @if(!empty($gh['repos']))
+                                            <div>
+                                                <strong style="color: #94a3b8; display: block; margin-bottom: 0.4rem; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;">Key Public Repositories:</strong>
+                                                <div style="display: flex; flex-wrap: wrap; gap: 0.5rem;">
+                                                    @foreach($gh['repos'] as $repo)
+                                                        <div style="display: flex; align-items: center; gap: 0.3rem; font-size: 0.78rem; background: rgba(255,255,255,0.02); padding: 0.2rem 0.5rem; border-radius: 4px; border: 1px solid rgba(255,255,255,0.04);">
+                                                            <span style="color: #eab308; font-size: 0.8rem;">📂</span> 
+                                                            <a href="https://github.com/{{ trim($ghUser, '@ ') }}/{{ $repo }}" target="_blank" style="color: #38bdf8; text-decoration: none; font-weight: 500;">
+                                                                {{ $repo }}
+                                                            </a>
+                                                        </div>
+                                                    @endforeach
+                                                </div>
+                                            </div>
+                                        @endif
+                                        
+                                        @if(!empty($gh['evaluation_summary']))
+                                            <div style="margin-top: 0.25rem; background: rgba(0,0,0,0.15); padding: 0.75rem; border-radius: 6px; border: 1px solid rgba(255,255,255,0.03); line-height: 1.5; color: #cbd5e1; font-size: 0.82rem;">
+                                                {{ $gh['evaluation_summary'] }}
+                                            </div>
+                                        @endif
+                                    </div>
+                                </div>
+                            @endif
+
+                            @if($selectedCandidateScore->candidate->linkedin_analysis)
+                                @php
+                                    $li = $selectedCandidateScore->candidate->linkedin_analysis;
+                                    $liUrl = null;
+                                    if (!empty($li['profile_url'])) {
+                                        $rawUrl = $li['profile_url'];
+                                        $cleanUrl = preg_replace('#^https?://#', '', $rawUrl);
+                                        $cleanUrl = preg_replace('#^www\.#', '', $cleanUrl);
+                                        if (!str_contains($cleanUrl, 'linkedin.com')) {
+                                            $cleanUrl = 'linkedin.com/' . ltrim($cleanUrl, '/');
+                                        }
+                                        if (str_contains($cleanUrl, 'linkedin.com/') && !str_contains($cleanUrl, 'linkedin.com/in/')) {
+                                            $cleanUrl = str_replace('linkedin.com/', 'linkedin.com/in/', $cleanUrl);
+                                        }
+                                        $cleanUrl = str_replace('linkedin.com/in//', 'linkedin.com/in/', $cleanUrl);
+                                        $liUrl = 'https://' . $cleanUrl;
+                                    }
+                                    $validationStatus = $li['validation_status'] ?? 'Unverified';
+                                    $validationBadge = $validationStatus === 'Verified' ? 'badge-success' : 'badge-danger';
+                                @endphp
+                                <div style="margin-top: 1.5rem; border: 1px solid var(--card-border); border-radius: 12px; padding: 1.25rem; background: rgba(15, 23, 42, 0.4); box-shadow: 0 4px 20px rgba(0,0,0,0.15); backdrop-filter: blur(10px);">
+                                    <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 1rem; border-bottom: 1px solid rgba(255,255,255,0.08); padding-bottom: 0.75rem;">
+                                        <h4 style="margin: 0; color: #0284c7; font-size: 0.85rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; display: flex; align-items: center; gap: 0.5rem;">
+                                            💼 LinkedIn Intelligence
+                                        </h4>
+                                        <span class="badge {{ $validationBadge }}" style="font-weight: 700; font-size: 0.7rem; padding: 0.2rem 0.5rem; border-radius: 20px; text-transform: uppercase; letter-spacing: 0.05em;">
+                                            {{ $validationStatus }}
+                                        </span>
+                                    </div>
+                                    
+                                    <div style="font-size: 0.85rem; color: #cbd5e1; display: flex; flex-direction: column; gap: 0.75rem;">
+                                        @if($liUrl)
+                                            <div style="display: flex; align-items: center; gap: 0.4rem;">
+                                                <strong style="color: #94a3b8;">Profile Link:</strong>
+                                                <a href="{{ $liUrl }}" target="_blank" style="color: #0284c7; text-decoration: underline; font-weight: 600; display: inline-flex; align-items: center; gap: 0.2rem;">
+                                                    🔗 {{ str_replace('https://', '', $liUrl) }}
+                                                </a>
+                                            </div>
+                                        @endif
+                                        
+                                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem;">
+                                            @if(isset($li['average_tenure_years']))
+                                                <div style="background: rgba(0,0,0,0.15); padding: 0.5rem 0.75rem; border-radius: 6px; border: 1px solid rgba(255,255,255,0.03);">
+                                                    <div style="font-size: 0.7rem; color: #94a3b8; text-transform: uppercase; font-weight: 600; letter-spacing: 0.03em;">Avg Job Tenure</div>
+                                                    <div style="font-size: 1.05rem; font-weight: 700; color: #f8fafc; margin-top: 0.15rem;">{{ $li['average_tenure_years'] }} years</div>
+                                                </div>
+                                            @endif
+                                            @if(isset($li['job_hopping_index']))
+                                                <div style="background: rgba(0,0,0,0.15); padding: 0.5rem 0.75rem; border-radius: 6px; border: 1px solid rgba(255,255,255,0.03);">
+                                                    <div style="font-size: 0.7rem; color: #94a3b8; text-transform: uppercase; font-weight: 600; letter-spacing: 0.03em;">Job Hopping Risk</div>
+                                                    <div style="font-size: 1.05rem; font-weight: 700; color: {{ $li['job_hopping_index'] === 'high' ? 'var(--danger)' : ($li['job_hopping_index'] === 'medium' ? 'var(--warning)' : 'var(--success)') }}; margin-top: 0.15rem; text-transform: capitalize;">
+                                                        {{ $li['job_hopping_index'] }}
+                                                    </div>
+                                                </div>
+                                            @endif
+                                        </div>
+
+                                        @if(isset($li['recommendations_count']))
+                                            <div>
+                                                <strong style="color: #94a3b8;">Recommendations Received:</strong>
+                                                <span style="font-weight: 600; color: #f8fafc; margin-left: 0.25rem;">{{ $li['recommendations_count'] }}</span>
+                                            </div>
+                                        @endif
+
+                                        @if(!empty($li['skills_endorsements']))
+                                            <div>
+                                                <strong style="color: #94a3b8; display: block; margin-bottom: 0.4rem; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;">Top Skills Endorsements:</strong>
+                                                <div style="display: flex; flex-wrap: wrap; gap: 0.4rem;">
+                                                    @foreach($li['skills_endorsements'] as $se)
+                                                        @if(is_array($se))
+                                                            <span style="background: rgba(2, 132, 199, 0.05); border: 1px solid rgba(2, 132, 199, 0.15); padding: 0.2rem 0.5rem; border-radius: 4px; font-size: 0.72rem; color: #cbd5e1; font-family: monospace;">
+                                                                {{ $se['skill'] ?? 'Skill' }}: {{ $se['endorsements'] ?? 0 }}
+                                                            </span>
+                                                        @endif
+                                                    @endforeach
+                                                </div>
+                                            </div>
+                                        @endif
+                                        
+                                        @if(!empty($li['career_growth']))
+                                            <div style="margin-top: 0.25rem; background: rgba(0,0,0,0.15); padding: 0.75rem; border-radius: 6px; border: 1px solid rgba(255,255,255,0.03); line-height: 1.5; color: #cbd5e1; font-size: 0.82rem;">
+                                                {{ $li['career_growth'] }}
+                                            </div>
+                                        @endif
+                                    </div>
+                                </div>
+                            @endif
                         </div>
                     </div>
                 @elseif($drawerTab === 'interviews')

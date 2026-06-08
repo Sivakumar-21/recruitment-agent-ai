@@ -70,7 +70,7 @@ class AutonomousAgentsTest extends TestCase
         $this->assertEquals('Screening', $score2->candidate_status);
         $this->assertEquals(0, EmailLog::where('candidate_id', $candidate2->id)->count());
 
-        // Case 3: Score < 70 => Reject
+        // Case 3: Score < 65 => Held for Human Approval (Screening status + Approval Request)
         $candidate3 = Candidate::create(['name' => 'John Reject', 'email' => 'reject@example.com', 'resume_path' => 'resumes/fake.pdf']);
         $score3 = CandidateScore::create(['recruitment_job_id' => $recJob->id, 'candidate_id' => $candidate3->id, 'status' => 'processing']);
 
@@ -82,8 +82,9 @@ class AutonomousAgentsTest extends TestCase
         (new ProcessResumeJob($candidate3, $recJob))->handle($parser, $openai3);
 
         $score3->refresh();
-        $this->assertEquals('Rejected', $score3->candidate_status);
-        $this->assertEquals(1, EmailLog::where('candidate_id', $candidate3->id)->where('type', 'rejection')->count());
+        $this->assertEquals('Screening', $score3->candidate_status);
+        $this->assertEquals(0, EmailLog::where('candidate_id', $candidate3->id)->where('type', 'rejection')->count());
+        $this->assertEquals(1, \App\Models\ApprovalRequest::where('action_type', 'auto_reject')->where('target_id', $score3->id)->count());
     }
 
     /**
@@ -137,6 +138,11 @@ class AutonomousAgentsTest extends TestCase
             // Visa status response
             ->set('userInput', 'Citizen')
             ->call('sendMessage')
+            ->assertSee('professional reference')
+            
+            // Reference response
+            ->set('userInput', 'Jane Smith, jane@example.com, Former Manager')
+            ->call('sendMessage')
             
             // Chatbot transitions to scheduling stage and displays slots
             ->assertSet('currentStep', 'scheduling')
@@ -180,7 +186,8 @@ class AutonomousAgentsTest extends TestCase
             ->set('userInput', 'Immediate')->call('sendMessage')
             ->set('userInput', 'Acme')->call('sendMessage')
             ->set('userInput', 'Hybrid')->call('sendMessage')
-            ->set('userInput', 'Citizen')->call('sendMessage');
+            ->set('userInput', 'Citizen')->call('sendMessage')
+            ->set('userInput', 'Jane Smith, jane@example.com, Former Manager')->call('sendMessage');
 
         $slots = $portalTest->get('availableSlots');
         $this->assertNotEmpty($slots);

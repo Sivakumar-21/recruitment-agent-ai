@@ -21,7 +21,7 @@ class CandidatePortal extends Component
     // Chatbot state
     public array $messages = [];
     public string $userInput = '';
-    public string $currentStep = 'salary'; // salary, notice, company, remote, visa, scheduling, confirmed
+    public string $currentStep = 'salary'; // salary, notice, company, remote, visa, reference, scheduling, confirmed
     
     // Scheduling slots
     public array $availableSlots = [];
@@ -130,18 +130,52 @@ class CandidatePortal extends Component
 
             case 'visa':
                 $this->candidate->update(['visa_status' => $input]);
+                $this->currentStep = 'reference';
+                $this->messages[] = [
+                    'sender' => 'bot',
+                    'text' => "Thank you! Lastly, could you please provide details of one professional reference who can verify your work experience? (Format: Name, Email, and Relationship, e.g. 'Jane Smith, jane@example.com, Former Manager')",
+                ];
+                break;
+
+            case 'reference':
+                // Parse input
+                $parts = explode(',', $input);
+                $refName = trim($parts[0] ?? 'Unknown Reference');
+                $refEmail = trim($parts[1] ?? 'reference@example.com');
+                $refRel = trim($parts[2] ?? 'Professional Contact');
+
+                \App\Models\ReferenceCheck::create([
+                    'candidate_id' => $this->candidate->id,
+                    'candidate_score_id' => $this->scoreRecord->id,
+                    'reference_name' => $refName,
+                    'reference_relationship' => $refRel,
+                    'email' => $refEmail,
+                    'status' => 'pending',
+                ]);
                 
+                // Create or update CandidateScreening record
+                \App\Models\CandidateScreening::updateOrCreate([
+                    'candidate_id' => $this->candidate->id,
+                    'recruitment_job_id' => $this->job->id,
+                ], [
+                    'expected_salary' => $this->candidate->expected_salary,
+                    'notice_period' => $this->candidate->notice_period,
+                    'work_authorization' => $this->candidate->visa_status,
+                    'remote_preference' => $this->candidate->remote_preference,
+                    'additional_notes' => 'Completed via screening chatbot. Current company: ' . $this->candidate->current_company . '. Reference: ' . $refName . ' (' . $refRel . ')',
+                ]);
+
                 // Log audit log for completing screening chatbot
                 AuditLog::logAction(
                     'Candidate Screening Completed',
-                    "Candidate {$this->candidate->name} completed screening questions via Chatbot."
+                    "Candidate {$this->candidate->name} completed screening questions and reference data via Chatbot."
                 );
 
                 $this->currentStep = 'scheduling';
                 $this->generateTimeSlots();
                 $this->messages[] = [
                     'sender' => 'bot',
-                    'text' => "Perfect! Your screening responses have been saved successfully.\n\nNow, let's schedule your interview. Please select one of the proposed time slots below:",
+                    'text' => "Perfect! Reference details and screening responses have been saved successfully.\n\nNow, let's schedule your interview. Please select one of the proposed time slots below:",
                 ];
                 break;
         }

@@ -52,8 +52,31 @@ class DocumentParserService
             $memoryBefore = memory_get_usage();
             $pdf = $parser->parseFile($filePath);
             $text = $pdf->getText();
-            $memoryUsed = round((memory_get_usage() - $memoryBefore) / 1024 / 1024, 2);
+
+            // Try to extract hyperlinks from annotations
+            $links = [];
+            try {
+                $annotations = $pdf->getObjectsByType('Annot');
+                foreach ($annotations as $annot) {
+                    $details = $annot->getDetails();
+                    if (isset($details['A']['URI'])) {
+                        $uri = trim($details['A']['URI']);
+                        if (!empty($uri)) {
+                            $links[] = $uri;
+                        }
+                    }
+                }
+            } catch (Exception $annotEx) {
+                Log::warning("DocumentParserService: Failed to parse PDF annotations: " . $annotEx->getMessage());
+            }
+
+            if (!empty($links)) {
+                $linksText = "\n\nLinks found in document:\n" . implode("\n", array_unique($links));
+                $text .= $linksText;
+                Log::debug("DocumentParserService: Appended " . count(array_unique($links)) . " extracted links to PDF text.");
+            }
             
+            $memoryUsed = round((memory_get_usage() - $memoryBefore) / 1024 / 1024, 2);
             Log::debug("DocumentParserService: Smalot PDF Parser successfully extracted text. Approximate memory change: {$memoryUsed} MB");
             return $text;
         } catch (Exception $e) {
@@ -76,10 +99,14 @@ class DocumentParserService
             
             if ($zip->open($filePath) === true) {
                 Log::debug("DocumentParserService: Successfully opened DOCX zip archive. Checking word/document.xml...");
+                
+                $text = '';
+                $links = [];
+                
+                // 1. Extract text from document.xml
                 if (($index = $zip->locateName('word/document.xml')) !== false) {
                     Log::debug("DocumentParserService: word/document.xml found at index {$index}. Extracting contents...");
                     $data = $zip->getFromIndex($index);
-                    $zip->close();
                     
                     // Replace paragraph, run break, tab, and br tags with newlines/spaces to maintain layout
                     $data = str_replace(
@@ -89,13 +116,31 @@ class DocumentParserService
                     );
                     
                     $text = trim(html_entity_decode(strip_tags($data)));
-                    Log::debug("DocumentParserService: XML tags stripped. Word document text successfully extracted.");
-                    return $text;
                 }
-                
+
+                // 2. Extract external hyperlink relationships
+                if (($relsIndex = $zip->locateName('word/_rels/document.xml.rels')) !== false) {
+                    Log::debug("DocumentParserService: word/_rels/document.xml.rels found. Extracting relationships...");
+                    $relsData = $zip->getFromIndex($relsIndex);
+                    if (preg_match_all('/Type="[^"]*hyperlink"[^>]*Target="([^"]+)"/i', $relsData, $matches)) {
+                        $links = array_unique($matches[1]);
+                    }
+                }
+
                 $zip->close();
-                Log::error("DocumentParserService: XML extraction failed. word/document.xml not found inside DOCX zip archive: '{$filePath}'");
-                throw new Exception("Could not locate word/document.xml inside zip archive.");
+
+                if (empty($text)) {
+                    Log::error("DocumentParserService: XML extraction failed. word/document.xml not found inside DOCX zip archive: '{$filePath}'");
+                    throw new Exception("Could not locate or extract text from word/document.xml inside zip archive.");
+                }
+
+                if (!empty($links)) {
+                    $text .= "\n\nLinks found in document:\n" . implode("\n", $links);
+                    Log::debug("DocumentParserService: Appended " . count($links) . " extracted DOCX links to text.");
+                }
+
+                Log::debug("DocumentParserService: XML tags stripped. Word document text successfully extracted.");
+                return $text;
             }
             
             Log::error("DocumentParserService: Could not open ZIP archive at '{$filePath}'. Error code: " . $zip->open($filePath));

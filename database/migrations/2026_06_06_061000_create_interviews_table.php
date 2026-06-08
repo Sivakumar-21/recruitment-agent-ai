@@ -18,6 +18,7 @@ return new class extends Migration
             $table->string('status')->default('scheduled'); // scheduled, completed, cancelled
             $table->text('notes')->nullable();
             $table->json('evaluation')->nullable(); // technical_score, communication_score, leadership_score, recommendation, summary
+            $table->json('video_evaluation')->nullable();
             $table->timestamps();
         });
     }

@@ -27,6 +27,9 @@ return new class extends Migration
             $table->longText('resume_text')->nullable();
             $table->json('parsed_data')->nullable();
             $table->longText('embedding')->nullable(); // JSON array representing the embedding vector
+            $table->foreignId('merged_into_id')->nullable()->constrained('candidates')->onDelete('set null');
+            $table->json('github_analysis')->nullable();
+            $table->json('linkedin_analysis')->nullable();
             $table->timestamps();
         });
     }

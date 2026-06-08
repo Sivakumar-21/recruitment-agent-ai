@@ -57,6 +57,10 @@ class JobDetails extends Component
     // Agent 6: Offer Recommendation
     public ?array $offerRecommendation = null;
     public bool $isGeneratingOffer = false;
+    public bool $isEditingOffer = false;
+    public string $editOfferSalary = '';
+    public string $editOfferJustification = '';
+    public string $editOfferBenefits = '';
 
     // Agent 7: Talent Pool Matches
     public array $talentPoolMatches = [];
@@ -68,13 +72,32 @@ class JobDetails extends Component
     public bool $isCopilotResponding = false;
     public array $copilotMatchedCandidateIds = [];
 
+    // Duplicate Detection state
+    public array $potentialDuplicates = [];
+
+    // Approval Governance state
+    public $pendingApprovals = [];
+
+    // Reference checking state
+    public array $candidateReferences = [];
+
     // Drawer tabs state
     public string $drawerTab = 'dossier'; // dossier, interviews, offer, email
+
+    // Resume preview state
+    public bool $showResumePreview = false;
+
+    public function toggleResumePreview()
+    {
+        $this->showResumePreview = !$this->showResumePreview;
+    }
 
     public function mount(int $id)
     {
         Log::debug("JobDetails::mount: Loading Job ID: {$id}");
         $this->job = RecruitmentJob::findOrFail($id);
+        $this->findTalentPoolMatches(app(OpenAIService::class));
+        $this->loadPendingApprovals();
     }
 
     /**
@@ -258,8 +281,10 @@ class JobDetails extends Component
         $this->editRemotePreference = $candidate->remote_preference ?? 'Not specified';
         $this->editVisaStatus = $candidate->visa_status ?? 'Not specified';
 
-        $this->offerRecommendation = null;
+        $this->offerRecommendation = $this->selectedCandidateScore->analysis['offer'] ?? null;
+        $this->isEditingOffer = false;
         $this->drawerTab = 'dossier';
+        $this->showResumePreview = false;
 
         // Fetch other versions
         $email = $candidate->email;
@@ -275,6 +300,22 @@ class JobDetails extends Component
         } else {
             $this->selectedCandidateVersions = [$this->selectedCandidateScore->toArray()];
         }
+
+        // Fetch potential duplicates
+        $dedup = app(\App\Services\DeduplicationService::class);
+        $this->potentialDuplicates = $dedup->findPotentialDuplicates($candidate)
+            ->map(function ($dup) {
+                return [
+                    'id' => $dup->id,
+                    'name' => $dup->name,
+                    'email' => $dup->email,
+                    'phone' => $dup->phone,
+                ];
+            })
+            ->toArray();
+
+        // Fetch candidate references
+        $this->candidateReferences = \App\Models\ReferenceCheck::where('candidate_id', $candidate->id)->get()->toArray();
     }
 
     /**
@@ -314,6 +355,13 @@ class JobDetails extends Component
             "Changed pipeline status of {$scoreRecord->candidate->name} from '{$oldStatus}' to '{$status}' for job: {$this->job->title}"
         );
 
+        \App\Models\CandidateActivity::logActivity(
+            $scoreRecord->candidate_id,
+            $scoreRecord->recruitment_job_id,
+            'status_changed',
+            "Recruiter changed status from '{$oldStatus}' to '{$status}'"
+        );
+
         session()->flash('success', "Status updated to {$status} successfully.");
     }
 
@@ -342,6 +390,13 @@ class JobDetails extends Component
         \App\Models\AuditLog::logAction(
             'Candidate Evaluation Updated',
             "Updated notes/rating/metadata for {$candidate->name} on job: {$this->job->title}"
+        );
+
+        \App\Models\CandidateActivity::logActivity(
+            $candidate->id,
+            $this->selectedCandidateScore->recruitment_job_id,
+            'details_updated',
+            "Recruiter updated candidate profile details and evaluation notes"
         );
 
         session()->flash('success', "Candidate details saved successfully.");
@@ -578,6 +633,7 @@ class JobDetails extends Component
             }
 
             $this->isEditing = false;
+            $this->findTalentPoolMatches(app(OpenAIService::class));
             session()->flash('success', 'Job posting updated successfully. Re-evaluating applicants against new criteria...');
         } catch (\Exception $e) {
             Log::error("JobDetails::saveJob: Job update failed: " . $e->getMessage(), ['exception' => $e]);
@@ -615,9 +671,20 @@ class JobDetails extends Component
                 $this->interviewNotesInput
             );
 
+            // Run Agent 17: Video Interview Agent
+            $orchestrator = app(\App\Services\AgentOrchestrator::class);
+            $videoResult = $orchestrator->execute('Video Interview Agent', $this->selectedCandidateScore->candidate_id, $this->job->id, function() use ($openai) {
+                return $openai->evaluateVideoInterview(
+                    $this->job->title,
+                    $this->selectedCandidateScore->candidate->name,
+                    $this->interviewNotesInput
+                );
+            });
+
             $interview->update([
                 'notes' => $this->interviewNotesInput,
                 'evaluation' => $result,
+                'video_evaluation' => $videoResult,
                 'status' => 'completed',
             ]);
 
@@ -626,6 +693,13 @@ class JobDetails extends Component
                 'candidate_status' => 'Interviewed',
                 'status_updated_at' => now(),
             ]);
+
+            \App\Models\CandidateActivity::logActivity(
+                $this->selectedCandidateScore->candidate_id,
+                $this->job->id,
+                'interview_evaluated',
+                "Interview evaluation completed. Recommendation: {$result['recommendation']}. Technical Score: {$result['technical_score']}%, Communication: {$result['communication_score']}%"
+            );
 
             $this->reset('interviewNotesInput');
             $this->selectedCandidateScore->refresh();
@@ -642,6 +716,266 @@ class JobDetails extends Component
         } finally {
             $this->isEvaluatingInterview = false;
         }
+    }
+
+    /**
+     * Hiring Recommendation Agent: Synthesize final candidate score, questionnaire answers, and interview evaluation.
+     */
+    public function generateHiringRecommendation(OpenAIService $openai)
+    {
+        if (!$this->selectedCandidateScore) return;
+
+        $candidate = $this->selectedCandidateScore->candidate;
+        $job = $this->job;
+
+        $candidateDetails = [
+            'name' => $candidate->name,
+            'email' => $candidate->email,
+            'score' => $this->selectedCandidateScore->score,
+            'skills' => $candidate->parsed_data['skills'] ?? [],
+            'experience_years' => $candidate->parsed_data['experience_years'] ?? 0,
+            'expected_salary' => $candidate->expected_salary,
+            'notice_period' => $candidate->notice_period,
+            'remote_preference' => $candidate->remote_preference,
+            'visa_status' => $candidate->visa_status,
+        ];
+
+        $completedInterviews = $this->selectedCandidateScore->interviews()
+            ->where('status', 'completed')
+            ->get()
+            ->map(function ($interview) {
+                return [
+                    'interviewer' => $interview->interviewer_name,
+                    'notes' => $interview->notes,
+                    'evaluation' => $interview->evaluation,
+                ];
+            })
+            ->toArray();
+
+        if (empty($completedInterviews)) {
+            session()->flash('error', 'Cannot generate hiring recommendation: No completed interviews found.');
+            return;
+        }
+
+        $jobDetails = [
+            'title' => $job->title,
+            'required_skills' => $job->required_skills,
+            'experience_years' => $job->experience_years,
+        ];
+
+        try {
+            $recommendationResult = $openai->generateHiringRecommendation(
+                $candidateDetails,
+                $completedInterviews,
+                $jobDetails
+            );
+
+            $currentAnalysis = $this->selectedCandidateScore->analysis ?? [];
+            $currentAnalysis['hiring_recommendation'] = $recommendationResult;
+
+            $this->selectedCandidateScore->update([
+                'analysis' => $currentAnalysis,
+            ]);
+
+            \App\Models\CandidateActivity::logActivity(
+                $candidate->id,
+                $job->id,
+                'hiring_recommendation_generated',
+                "AI Hiring Recommendation generated. Decision: {$recommendationResult['grade']}"
+            );
+
+            $this->selectedCandidateScore->refresh();
+
+            session()->flash('success', 'AI Hiring Recommendation generated successfully!');
+        } catch (\Exception $e) {
+            Log::error("JobDetails::generateHiringRecommendation error: " . $e->getMessage());
+            session()->flash('error', 'Failed to generate hiring recommendation: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Agent 7: Merge candidate duplicate profile.
+     */
+    public function mergeCandidate(int $duplicateId, \App\Services\DeduplicationService $dedup)
+    {
+        if (!$this->selectedCandidateScore) return;
+
+        try {
+            $duplicate = Candidate::findOrFail($duplicateId);
+            $primary = $this->selectedCandidateScore->candidate;
+
+            $dedup->mergeCandidates($primary, $duplicate);
+
+            // Refresh potential duplicates list
+            $this->potentialDuplicates = $dedup->findPotentialDuplicates($primary)
+                ->map(function ($dup) {
+                    return [
+                        'id' => $dup->id,
+                        'name' => $dup->name,
+                        'email' => $dup->email,
+                        'phone' => $dup->phone,
+                    ];
+                })
+                ->toArray();
+
+            // Refresh candidate scores
+            $this->selectedCandidateScore->refresh();
+            
+            session()->flash('success', "Successfully merged profile of {$duplicate->name} into {$primary->name}.");
+        } catch (\Exception $e) {
+            Log::error("JobDetails::mergeCandidate error: " . $e->getMessage());
+            session()->flash('error', 'Failed to merge profiles: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Governance policy: Check if the offer recommendation requires manager approval.
+     */
+    protected function checkOfferApproval(array $offerRec, array $analysis): array
+    {
+        $salaryStr = $offerRec['suggested_salary'] ?? '';
+        $salaryNumber = (int) preg_replace('/\D/', '', $salaryStr);
+        
+        $needsApproval = false;
+        if ($salaryNumber > 150000) {
+            $lowerSalary = strtolower($salaryStr);
+            if (str_contains($lowerSalary, '$') || str_contains($lowerSalary, 'usd') || str_contains($lowerSalary, 'year') || !str_contains($lowerSalary, 'lpa')) {
+                $needsApproval = true;
+            }
+        }
+
+        if ($needsApproval) {
+            \App\Models\ApprovalRequest::where('action_type', 'high_offer')
+                ->where('target_type', \App\Models\CandidateScore::class)
+                ->where('target_id', $this->selectedCandidateScore->id)
+                ->where('status', 'pending')
+                ->delete();
+
+            \App\Models\ApprovalRequest::create([
+                'action_type' => 'high_offer',
+                'target_type' => \App\Models\CandidateScore::class,
+                'target_id' => $this->selectedCandidateScore->id,
+                'status' => 'pending',
+                'requester_notes' => "Offer salary of {$salaryStr} exceeds $150,000 limit. Requires manager approval.",
+            ]);
+
+            $analysis['offer_approved'] = false;
+            Log::info("Human Approval Agent: High salary offer {$salaryStr} held for manager approval.");
+        } else {
+            $analysis['offer_approved'] = true;
+        }
+
+        return $analysis;
+    }
+
+    /**
+     * Load pending human approvals for the current job context.
+     */
+    public function loadPendingApprovals()
+    {
+        $this->pendingApprovals = \App\Models\ApprovalRequest::where('status', 'pending')
+            ->where(function ($query) {
+                $query->whereHasMorph('target', [\App\Models\CandidateScore::class], function ($q) {
+                    $q->where('recruitment_job_id', $this->job->id);
+                });
+            })
+            ->get();
+    }
+
+    /**
+     * Action to approve a pending human approval request.
+     */
+    public function approveRequest(int $requestId, ?string $notes = null)
+    {
+        $request = \App\Models\ApprovalRequest::findOrFail($requestId);
+        $request->update([
+            'status' => 'approved',
+            'approver_notes' => $notes ?: 'Approved by recruiter.',
+        ]);
+
+        $score = $request->target;
+
+        if ($request->action_type === 'auto_reject') {
+            $score->update([
+                'candidate_status' => 'Rejected',
+                'status_updated_at' => now(),
+            ]);
+            app(\App\Services\EmailCommunicationService::class)->sendRejectionEmail($score);
+
+            \App\Models\CandidateActivity::logActivity(
+                $score->candidate_id,
+                $this->job->id,
+                'rejected',
+                "Candidate rejection approved by recruiter. Rejection email sent."
+            );
+        } elseif ($request->action_type === 'high_offer') {
+            $analysis = $score->analysis;
+            $analysis['offer_approved'] = true;
+            $score->update(['analysis' => $analysis]);
+
+            \App\Models\CandidateActivity::logActivity(
+                $score->candidate_id,
+                $this->job->id,
+                'offer_approved',
+                "High salary offer approved by manager: {$analysis['offer']['suggested_salary']}"
+            );
+        }
+
+        $this->loadPendingApprovals();
+        if ($this->selectedCandidateScore && $this->selectedCandidateScore->id === $score->id) {
+            $this->selectedCandidateScore->refresh();
+            $this->offerRecommendation = $this->selectedCandidateScore->analysis['offer'] ?? null;
+        }
+
+        session()->flash('success', 'Approval request approved successfully!');
+    }
+
+    /**
+     * Action to reject/deny a pending human approval request.
+     */
+    public function rejectRequest(int $requestId, ?string $notes = null)
+    {
+        $request = \App\Models\ApprovalRequest::findOrFail($requestId);
+        $request->update([
+            'status' => 'rejected',
+            'approver_notes' => $notes ?: 'Rejected by recruiter.',
+        ]);
+
+        $score = $request->target;
+
+        if ($request->action_type === 'auto_reject') {
+            $score->update([
+                'candidate_status' => 'Screening',
+                'status_updated_at' => now(),
+            ]);
+
+            \App\Models\CandidateActivity::logActivity(
+                $score->candidate_id,
+                $this->job->id,
+                'rejection_cancelled',
+                "Auto-rejection rejected by recruiter. Candidate kept in screening."
+            );
+        } elseif ($request->action_type === 'high_offer') {
+            $analysis = $score->analysis;
+            unset($analysis['offer']);
+            $analysis['offer_approved'] = false;
+            $score->update(['analysis' => $analysis]);
+
+            \App\Models\CandidateActivity::logActivity(
+                $score->candidate_id,
+                $this->job->id,
+                'offer_rejected',
+                "High salary offer rejected by manager."
+            );
+        }
+
+        $this->loadPendingApprovals();
+        if ($this->selectedCandidateScore && $this->selectedCandidateScore->id === $score->id) {
+            $this->selectedCandidateScore->refresh();
+            $this->offerRecommendation = null;
+        }
+
+        session()->flash('info', 'Approval request rejected/cancelled.');
     }
 
     /**
@@ -670,6 +1004,23 @@ class JobDetails extends Component
 
             $this->offerRecommendation = $openai->generateOfferRecommendation($candidateDetails, $jobDetails);
 
+            // Save to database with Human Approval check
+            $analysis = $this->selectedCandidateScore->analysis ?? [];
+            $analysis['offer'] = $this->offerRecommendation;
+            $analysis = $this->checkOfferApproval($this->offerRecommendation, $analysis);
+            
+            $this->selectedCandidateScore->update(['analysis' => $analysis]);
+
+            \App\Models\CandidateActivity::logActivity(
+                $this->selectedCandidateScore->candidate_id,
+                $this->job->id,
+                'offer_recommendation_generated',
+                "AI generated an offer recommendation: Suggested Salary {$this->offerRecommendation['suggested_salary']}"
+            );
+
+            $this->loadPendingApprovals();
+            $this->selectedCandidateScore->refresh();
+
             session()->flash('success', 'Offer recommendation generated successfully!');
         } catch (\Exception $e) {
             Log::error("JobDetails::generateOffer error: " . $e->getMessage());
@@ -677,6 +1028,67 @@ class JobDetails extends Component
         } finally {
             $this->isGeneratingOffer = false;
         }
+    }
+
+    /**
+     * Start editing the offer recommendation.
+     */
+    public function startEditOffer()
+    {
+        if (!$this->offerRecommendation) return;
+        $this->editOfferSalary = $this->offerRecommendation['suggested_salary'] ?? '';
+        $this->editOfferJustification = $this->offerRecommendation['justification'] ?? '';
+        $benefitsArray = $this->offerRecommendation['benefits'] ?? [];
+        $this->editOfferBenefits = implode("\n", $benefitsArray);
+        $this->isEditingOffer = true;
+    }
+
+    /**
+     * Save the edited offer recommendation.
+     */
+    public function saveOffer()
+    {
+        $this->validate([
+            'editOfferSalary' => 'required|string',
+            'editOfferJustification' => 'required|string',
+            'editOfferBenefits' => 'nullable|string',
+        ]);
+
+        $benefitsArray = array_filter(array_map('trim', explode("\n", $this->editOfferBenefits)));
+
+        $this->offerRecommendation = [
+            'suggested_salary' => $this->editOfferSalary,
+            'justification' => $this->editOfferJustification,
+            'benefits' => array_values($benefitsArray),
+        ];
+
+        // Save to database with Human Approval check
+        $analysis = $this->selectedCandidateScore->analysis ?? [];
+        $analysis['offer'] = $this->offerRecommendation;
+        $analysis = $this->checkOfferApproval($this->offerRecommendation, $analysis);
+        
+        $this->selectedCandidateScore->update(['analysis' => $analysis]);
+
+        \App\Models\CandidateActivity::logActivity(
+            $this->selectedCandidateScore->candidate_id,
+            $this->job->id,
+            'offer_recommendation_edited',
+            "Recruiter edited the offer recommendation: Suggested Salary {$this->offerRecommendation['suggested_salary']}"
+        );
+
+        $this->loadPendingApprovals();
+        $this->selectedCandidateScore->refresh();
+
+        $this->isEditingOffer = false;
+        session()->flash('success', 'Offer recommendation updated successfully!');
+    }
+
+    /**
+     * Cancel editing the offer recommendation.
+     */
+    public function cancelEditOffer()
+    {
+        $this->isEditingOffer = false;
     }
 
     /**
@@ -716,6 +1128,13 @@ class JobDetails extends Component
             "Simulated offer letter email sent to {$candidate->name} for {$this->offerRecommendation['suggested_salary']}"
         );
 
+        \App\Models\CandidateActivity::logActivity(
+            $candidate->id,
+            $this->selectedCandidateScore->recruitment_job_id,
+            'offer_sent',
+            "Offer letter email sent to candidate with salary {$this->offerRecommendation['suggested_salary']}"
+        );
+
         session()->flash('success', 'Offer letter sent successfully to candidate!');
     }
 
@@ -727,6 +1146,14 @@ class JobDetails extends Component
         $interview = Interview::findOrFail($interviewId);
         $emailService = app(\App\Services\EmailCommunicationService::class);
         $emailService->sendInterviewReminderEmail($interview);
+
+        \App\Models\CandidateActivity::logActivity(
+            $interview->candidate_score->candidate_id,
+            $interview->candidate_score->recruitment_job_id,
+            'interview_reminder_sent',
+            "Interview reminder email sent for schedule: {$interview->scheduled_at}"
+        );
+
         session()->flash('success', 'Simulated interview reminder email sent successfully!');
     }
 
@@ -882,6 +1309,27 @@ class JobDetails extends Component
             $this->copilotResponse = $result['answer'] ?? 'No response generated.';
             $this->copilotMatchedCandidateIds = $result['matched_candidate_ids'] ?? [];
 
+            // Execute Copilot Actions
+            if (!empty($result['actions'])) {
+                foreach ($result['actions'] as $action) {
+                    $type = $action['type'] ?? 'none';
+                    $candidateScoreIds = $action['candidate_ids'] ?? [];
+
+                    foreach ($candidateScoreIds as $scoreId) {
+                        if ($type === 'shortlist') {
+                            $this->updateCandidateStatus($scoreId, 'Shortlisted');
+                        } elseif ($type === 'reject') {
+                            $this->updateCandidateStatus($scoreId, 'Rejected');
+                        } elseif ($type === 'generate_offer') {
+                            $this->selectedCandidateScore = CandidateScore::with(['candidate', 'interviews'])->find($scoreId);
+                            if ($this->selectedCandidateScore) {
+                                $this->generateOffer($openai);
+                            }
+                        }
+                    }
+                }
+            }
+
             \App\Models\AuditLog::logAction(
                 'Copilot Consulted',
                 "Recruiter queried Copilot: \"{$query}\""
@@ -927,5 +1375,86 @@ class JobDetails extends Component
         return view('livewire.job-details', [
             'candidateScores' => $candidateScores
         ])->layout('components.layouts.app');
+    }
+
+    /**
+     * Initiate Reference Check outreach (Simulated).
+     */
+    public function initiateReferenceCheck(int $referenceId)
+    {
+        Log::info("JobDetails::initiateReferenceCheck: Starting reference outreach for ID: {$referenceId}");
+        
+        $refCheck = \App\Models\ReferenceCheck::findOrFail($referenceId);
+        $refCheck->update(['status' => 'sent']);
+
+        // Log Candidate Activity & Audit Log
+        \App\Models\CandidateActivity::logActivity(
+            $refCheck->candidate_id,
+            $this->job->id,
+            'reference_outreach_sent',
+            "Reference check outreach email successfully dispatched to {$refCheck->reference_name} ({$refCheck->email})."
+        );
+
+        \App\Models\AuditLog::logAction(
+            'Reference Check Outreach Initiated',
+            "Sent simulated reference outreach to {$refCheck->reference_name} for candidate ID: {$refCheck->candidate_id}"
+        );
+
+        // Refresh references list
+        $this->candidateReferences = \App\Models\ReferenceCheck::where('candidate_id', $refCheck->candidate_id)->get()->toArray();
+        session()->flash('success', 'Reference outreach email sent successfully!');
+    }
+
+    /**
+     * Simulate Reference Feedback & evaluate using AI.
+     */
+    public function simulateReferenceFeedback(int $referenceId, OpenAIService $openai)
+    {
+        Log::info("JobDetails::simulateReferenceFeedback: Simulating feedback reception and evaluation for reference ID: {$referenceId}");
+        
+        $refCheck = \App\Models\ReferenceCheck::findOrFail($referenceId);
+
+        // Simulated reference feedback text
+        $feedbackText = "I worked with {$this->selectedCandidateScore->candidate->name} as their {$refCheck->reference_relationship} for over 2 years. " .
+            "They are an incredibly detail-oriented engineer, showing strong expertise in development. " .
+            "They communicate effectively, work well under tight deadlines, and I would absolutely hire them again.";
+
+        try {
+            // Run Agent 18: Reference Check Agent
+            $orchestrator = app(\App\Services\AgentOrchestrator::class);
+            $evaluation = $orchestrator->execute('Reference Check Agent', $refCheck->candidate_id, $this->job->id, function() use ($openai, $refCheck, $feedbackText) {
+                return $openai->evaluateReferenceFeedback(
+                    $this->selectedCandidateScore->candidate->name,
+                    $refCheck->reference_name,
+                    $refCheck->reference_relationship,
+                    $feedbackText
+                );
+            });
+
+            $refCheck->update([
+                'feedback_text' => $feedbackText,
+                'evaluation' => $evaluation,
+                'status' => 'completed',
+            ]);
+
+            \App\Models\CandidateActivity::logActivity(
+                $refCheck->candidate_id,
+                $this->job->id,
+                'reference_check_completed',
+                "AI evaluation of reference {$refCheck->reference_name} completed. Rating: {$evaluation['rating']}/10."
+            );
+
+            \App\Models\AuditLog::logAction(
+                'Reference Check Evaluated',
+                "Reference evaluation completed for {$refCheck->reference_name} (candidate: {$this->selectedCandidateScore->candidate->name})."
+            );
+
+            // Refresh references list
+            $this->candidateReferences = \App\Models\ReferenceCheck::where('candidate_id', $refCheck->candidate_id)->get()->toArray();
+            session()->flash('success', 'Reference feedback simulated and evaluated successfully!');
+        } catch (\Exception $e) {
+            Log::error("JobDetails::simulateReferenceFeedback error: " . $e->getMessage());
+            session()->flash('error', 'Failed to evaluate reference feedback: ' . $e->getMessage());
+        }
     }
 }
