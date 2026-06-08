@@ -1,58 +1,111 @@
-<p align="center"><a href="https://laravel.com" target="_blank"><img src="https://raw.githubusercontent.com/laravel/art/master/logo-lockup/5%20SVG/2%20CMYK/1%20Full%20Color/laravel-logolockup-cmyk-red.svg" width="400" alt="Laravel Logo"></a></p>
+# Recruitment Agent AI
 
-<p align="center">
-<a href="https://github.com/laravel/framework/actions"><img src="https://github.com/laravel/framework/workflows/tests/badge.svg" alt="Build Status"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/dt/laravel/framework" alt="Total Downloads"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/v/laravel/framework" alt="Latest Stable Version"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/l/laravel/framework" alt="License"></a>
-</p>
+An AI-powered recruitment management system built with **Laravel 11**, **Livewire**, and **OpenAI/Grok LLM**. This application automates resume parsing, job criteria matching, semantic candidate searches, candidate communications (rejection, screening, self-scheduling, and offer letters), automatic interview notes grading, and compensation recommendations.
 
-## About Laravel
+---
 
-Laravel is a web application framework with expressive, elegant syntax. We believe development must be an enjoyable and creative experience to be truly fulfilling. Laravel takes the pain out of development by easing common tasks used in many web projects, such as:
+## Features
 
-- [Simple, fast routing engine](https://laravel.com/docs/routing).
-- [Powerful dependency injection container](https://laravel.com/docs/container).
-- Multiple back-ends for [session](https://laravel.com/docs/session) and [cache](https://laravel.com/docs/cache) storage.
-- Expressive, intuitive [database ORM](https://laravel.com/docs/eloquent).
-- Database agnostic [schema migrations](https://laravel.com/docs/migrations).
-- [Robust background job processing](https://laravel.com/docs/queues).
-- [Real-time event broadcasting](https://laravel.com/docs/broadcasting).
+- **Resume Parsing**: Automatically extracts names, contact info, skills, education, and previous work experience from PDF and DOCX uploads.
+- **AI Matching & Score Grading**: Scores applicants against custom job criteria (skills, education, and experience matching).
+- **Recruiter Assistant Drawer**: A unified side-drawer displaying detailed evaluation summaries, strengths, concerns, and tailored interview questions.
+- **RAG Semantic Search**: Query your applicant pool with natural language (e.g., *"Laravel developer with AWS experience"*).
+- **Candidate Self-Screening Portal**: Interfacing chatbot for capturing expected salary, notice period, work status, and booking calendars.
+- **Offer Advisor Agent**: Suggests salary ranges, benefits packages, and logs automated offer letters.
 
-Laravel is accessible, powerful, and provides tools required for large, robust applications.
+---
 
-## Learning Laravel
+## Prerequisites
 
-Laravel has the most extensive and thorough [documentation](https://laravel.com/docs) and video tutorial library of all modern web application frameworks, making it a breeze to get started with the framework.
+- **PHP**: $\ge$ 8.2
+- **Composer**
+- **Node.js & npm**
+- **MySQL** / **MariaDB**
+- **OpenAI API Key** (for live parsing & matching)
 
-In addition, [Laracasts](https://laracasts.com) contains thousands of video tutorials on a range of topics including Laravel, modern PHP, unit testing, and JavaScript. Boost your skills by digging into our comprehensive video library.
+---
 
-You can also watch bite-sized lessons with real-world projects on [Laravel Learn](https://laravel.com/learn), where you will be guided through building a Laravel application from scratch while learning PHP fundamentals.
+## Project Setup
 
-## Agentic Development
+Follow these steps to set up the project locally:
 
-Laravel's predictable structure and conventions make it ideal for AI coding agents like Claude Code, Cursor, and GitHub Copilot. Install [Laravel Boost](https://laravel.com/docs/ai) to supercharge your AI workflow:
-
+### 1. Clone & Install Dependencies
 ```bash
-composer require laravel/boost --dev
+# Clone the repository
+git clone https://github.com/Sivakumar-21/recruitment-agent-ai.git
+cd recruitment-agent-ai
 
-php artisan boost:install
+# Install PHP dependencies
+composer install
+
+# Install Frontend assets
+npm install
 ```
 
-Boost provides your agent 15+ tools and skills that help agents build Laravel applications while following best practices.
+### 2. Environment Configuration
+Copy the `.env.example` file to `.env`:
+```bash
+cp .env.example .env
+```
 
-## Contributing
+Open `.env` and set up the following parameters:
 
-Thank you for considering contributing to the Laravel framework! The contribution guide can be found in the [Laravel documentation](https://laravel.com/docs/contributions).
+```env
+# Database Credentials
+DB_CONNECTION=mysql
+DB_HOST=127.0.0.1
+DB_PORT=3306
+DB_DATABASE=recruitment_agent
+DB_USERNAME=your_mysql_username
+DB_PASSWORD=your_mysql_password
 
-## Code of Conduct
+# LLM Provider Configuration (openai or grok)
+LLM_PROVIDER=openai
 
-In order to ensure that the Laravel community is welcoming to all, please review and abide by the [Code of Conduct](https://laravel.com/docs/contributions#code-of-conduct).
+# OpenAI API Credentials
+OPENAI_API_KEY=your_openai_api_key_here
+```
 
-## Security Vulnerabilities
+### 3. Application Key & Migrations
+Initialize the encryption key and set up database tables using the consolidated migration file:
+```bash
+# Generate app key
+php artisan key:generate
 
-If you discover a security vulnerability within Laravel, please send an e-mail to Taylor Otwell via [taylor@laravel.com](mailto:taylor@laravel.com). All security vulnerabilities will be promptly addressed.
+# Run migrations (runs the unified schema including all custom tables)
+php artisan migrate:fresh
+```
 
-## License
+---
 
-The Laravel framework is open-sourced software licensed under the [MIT license](https://opensource.org/licenses/MIT).
+## Running the Application
+
+To start the local development servers, run the following commands in separate terminals:
+
+### 1. Start PHP Serve
+```bash
+php artisan serve
+```
+By default, the backend will run at [http://127.0.0.1:8000](http://127.0.0.1:8000).
+
+### 2. Start Vite Asset Compiler
+```bash
+npm run dev
+```
+
+### 3. Run Queue Workers
+Since resume processing is dispatched to background workers, start a queue worker:
+```bash
+php artisan queue:work
+```
+
+---
+
+## Folder Structure Highlights
+
+- **`database/migrations/2026_06_05_000000_create_recruitment_agent_system_tables.php`**: Consolidates all recruitment database schemas.
+- **`app/Services/OpenAIService.php`**: Handles all API communications with OpenAI for parsing, matching, grading, and compensation recommendations.
+- **`app/Services/DocumentParserService.php`**: Extracts raw text from PDF and DOCX files.
+- **`app/Jobs/ProcessResumeJob.php`**: Handles background execution of resume uploads.
+- **`app/Livewire/`**: Contains core Livewire controllers (`JobList`, `JobDetails`, `CandidatePortal`).
+- **`resources/views/livewire/`**: Blade templates.
