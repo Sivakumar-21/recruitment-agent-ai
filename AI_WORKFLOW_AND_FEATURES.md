@@ -130,10 +130,12 @@ graph TD
 ## 5. Completed Functionalities
 
 * [x] **Consolidated DB Architecture:** Migrated all recruitment agent tables (jobs, candidates, scores, interviews, emails, audit logs) into unified, robust schemas.
+* [x] **Consolidated Database Migrations (New!):** Reorganized migration architecture to define table columns inside the initial creation migration files, avoiding multiple alter migration files modifying the same table.
 * [x] **Strict Dynamic Extraction:** Stripped out all hardcoded/fallback mocks in `OpenAIService.php`. All text extraction, embeddings, and parsed candidate fields now strictly query live LLM endpoints.
 * [x] **Groq API Integration:** Fully configured and verified with the Groq Base URL (`https://api.groq.com/openai/v1`) using `llama-3.1-8b-instant`.
 * [x] **Experience Layout Normalization:** Rewrote parser prompts to extract structured work experience seamlessly across varied formats.
 * [x] **Interactive Offer Editing UI:** Fully implemented an inline edit option for the Offer Recommendation Advisor.
+* [x] **Inline Resume Preview (PDF & DOCX):** Added support for viewing uploaded PDF resumes inline via a secure browser-rendered `iframe` and DOCX resumes using a scrollable raw text reader fallback with download button inside the candidate dossier drawer.
 * [x] **Phase 2 Expansion (All 6 New Agents):** Successfully implemented database models, services, Livewire event listeners, public portal integrations, and premium UI controls for candidate activity tracking, talent rediscovery, actionable copilot queries, screening questionnaires, synthesized hiring recommendations, and candidate profile deduplication.
 * [x] **Phase 3 Enterprise Deployment (All 6 New Agents):** Implemented GitHub Analyzer, LinkedIn Intelligence, Video Interview evaluation, Reference Outreach & Scoring, Workforce Planning, and Executive Funnel Analytics.
 * [x] **Agent Operations & Governance Dashboard:** Built a complete metrics dashboard rendering system-wide drift monitors, latency/cost calculations, time-to-fill forecasts, and executive reports.
