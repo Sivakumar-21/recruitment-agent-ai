@@ -12,6 +12,7 @@ class Candidate extends Model
     use HasFactory;
 
     protected $fillable = [
+        'uuid',
         'name',
         'email',
         'phone',
@@ -20,12 +21,37 @@ class Candidate extends Model
         'resume_text',
         'parsed_data',
         'embedding',
+        'version',
+        'uploaded_at',
+        'is_latest',
+        'expected_salary',
+        'notice_period',
+        'current_company',
+        'remote_preference',
+        'visa_status',
     ];
 
     protected $casts = [
         'parsed_data' => 'array',
         'embedding' => 'array',
+        'version' => 'integer',
+        'uploaded_at' => 'datetime',
+        'is_latest' => 'boolean',
     ];
+
+    protected static function booted()
+    {
+        static::creating(function ($candidate) {
+            if (empty($candidate->uuid)) {
+                $candidate->uuid = (string) \Illuminate\Support\Str::uuid();
+            }
+        });
+    }
+
+    public function emailLogs(): HasMany
+    {
+        return $this->hasMany(EmailLog::class);
+    }
 
     public function candidateScores(): HasMany
     {

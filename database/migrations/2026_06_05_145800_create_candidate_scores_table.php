@@ -18,6 +18,10 @@ return new class extends Migration
             $table->decimal('education_match', 5, 2)->default(0.00);
             $table->string('recommendation')->nullable();
             $table->string('status')->default('processing'); // processing, completed, failed
+            $table->string('candidate_status')->default('New');
+            $table->timestamp('status_updated_at')->nullable();
+            $table->text('candidate_notes')->nullable();
+            $table->tinyInteger('candidate_rating')->nullable();
             $table->json('analysis')->nullable(); // summary, strengths, concerns, interview questions
             $table->timestamps();
         });

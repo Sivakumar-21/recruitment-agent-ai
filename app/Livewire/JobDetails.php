@@ -5,6 +5,7 @@ namespace App\Livewire;
 use App\Jobs\ProcessResumeJob;
 use App\Models\Candidate;
 use App\Models\CandidateScore;
+use App\Models\Interview;
 use App\Models\RecruitmentJob;
 use App\Services\OpenAIService;
 use Livewire\Component;
@@ -21,6 +22,22 @@ class JobDetails extends Component
     public string $searchQuery = '';
     public ?array $searchResults = null;
     public ?CandidateScore $selectedCandidateScore = null;
+    
+    // Pipeline and Evaluation details
+    public string $candidateNotes = '';
+    public int $candidateRating = 0;
+    public $selectedCandidateVersions = [];
+    
+    // Editable candidate profile fields
+    public string $editExpectedSalary = '';
+    public string $editNoticePeriod = '';
+    public string $editCurrentCompany = '';
+    public string $editRemotePreference = '';
+    public string $editVisaStatus = '';
+
+    // Candidate Comparison state
+    public array $compareCandidateIds = [];
+    public bool $isComparing = false;
 
     // Edit state properties
     public bool $isEditing = false;
@@ -29,6 +46,30 @@ class JobDetails extends Component
     public string $editRequiredSkills = '';
     public string $editPreferredSkills = '';
     public int $editExperienceYears = 0;
+
+    // Tabs state
+    public string $activeTab = 'pipeline'; // pipeline, talent_pool
+    
+    // Agent 5: Interview Evaluation
+    public string $interviewNotesInput = '';
+    public bool $isEvaluatingInterview = false;
+
+    // Agent 6: Offer Recommendation
+    public ?array $offerRecommendation = null;
+    public bool $isGeneratingOffer = false;
+
+    // Agent 7: Talent Pool Matches
+    public array $talentPoolMatches = [];
+    public bool $isSearchingTalentPool = false;
+
+    // Agent 8: Recruiter Copilot
+    public string $copilotQuery = '';
+    public string $copilotResponse = '';
+    public bool $isCopilotResponding = false;
+    public array $copilotMatchedCandidateIds = [];
+
+    // Drawer tabs state
+    public string $drawerTab = 'dossier'; // dossier, interviews, offer, email
 
     public function mount(int $id)
     {
@@ -140,10 +181,13 @@ class JobDetails extends Component
             }
             Log::debug("JobDetails::search: Generated query vector. Length: " . count($queryVector) . " dimensions");
 
-            // Get all candidate scores for this job
+            // Get all candidate scores for this job (only the latest version of each candidate)
             $candidateScores = CandidateScore::with('candidate')
                 ->where('recruitment_job_id', $this->job->id)
                 ->where('status', 'completed')
+                ->whereHas('candidate', function($query) {
+                    $query->where('is_latest', true);
+                })
                 ->get();
             Log::debug("JobDetails::search: Found " . $candidateScores->count() . " completed candidate records to perform dot-product comparison.");
 
@@ -197,12 +241,262 @@ class JobDetails extends Component
     }
 
     /**
+    /**
      * Select candidate and open sidebar drawer.
      */
     public function selectCandidate(int $scoreId)
     {
         Log::debug("JobDetails::selectCandidate: Selecting CandidateScore ID: {$scoreId}");
-        $this->selectedCandidateScore = CandidateScore::with('candidate')->findOrFail($scoreId);
+        $this->selectedCandidateScore = CandidateScore::with(['candidate', 'interviews'])->findOrFail($scoreId);
+        $this->candidateNotes = $this->selectedCandidateScore->candidate_notes ?? '';
+        $this->candidateRating = $this->selectedCandidateScore->candidate_rating ?? 0;
+        
+        $candidate = $this->selectedCandidateScore->candidate;
+        $this->editExpectedSalary = $candidate->expected_salary ?? 'Not specified';
+        $this->editNoticePeriod = $candidate->notice_period ?? 'Not specified';
+        $this->editCurrentCompany = $candidate->current_company ?? 'Not specified';
+        $this->editRemotePreference = $candidate->remote_preference ?? 'Not specified';
+        $this->editVisaStatus = $candidate->visa_status ?? 'Not specified';
+
+        $this->offerRecommendation = null;
+        $this->drawerTab = 'dossier';
+
+        // Fetch other versions
+        $email = $candidate->email;
+        if ($email) {
+            $this->selectedCandidateVersions = CandidateScore::with('candidate')
+                ->where('recruitment_job_id', $this->job->id)
+                ->whereHas('candidate', function ($query) use ($email) {
+                    $query->where('email', $email);
+                })
+                ->orderBy('id', 'desc')
+                ->get()
+                ->toArray();
+        } else {
+            $this->selectedCandidateVersions = [$this->selectedCandidateScore->toArray()];
+        }
+    }
+
+    /**
+     * Update candidate status workflow.
+     */
+    public function updateCandidateStatus(int $scoreId, string $status)
+    {
+        Log::info("JobDetails::updateCandidateStatus: Updating score ID {$scoreId} status to '{$status}'");
+        
+        $validStatuses = ['New', 'Screening', 'Shortlisted', 'Interview Scheduled', 'Interviewed', 'Selected', 'Offer Sent', 'Hired', 'Rejected'];
+        if (!in_array($status, $validStatuses)) {
+            Log::error("JobDetails::updateCandidateStatus: Invalid status '{$status}'");
+            return;
+        }
+
+        $scoreRecord = CandidateScore::with('candidate')->findOrFail($scoreId);
+        $oldStatus = $scoreRecord->candidate_status;
+        $scoreRecord->update([
+            'candidate_status' => $status,
+            'status_updated_at' => now(),
+        ]);
+
+        if ($this->selectedCandidateScore && $this->selectedCandidateScore->id === $scoreId) {
+            $this->selectedCandidateScore->refresh();
+        }
+
+        // Trigger emails if manually moved to Shortlisted or Rejected
+        if ($status === 'Shortlisted' && $oldStatus !== 'Shortlisted') {
+            app(\App\Services\EmailCommunicationService::class)->sendShortlistEmail($scoreRecord);
+        } elseif ($status === 'Rejected' && $oldStatus !== 'Rejected') {
+            app(\App\Services\EmailCommunicationService::class)->sendRejectionEmail($scoreRecord);
+        }
+
+        // Log audit log
+        \App\Models\AuditLog::logAction(
+            'Candidate Status Changed',
+            "Changed pipeline status of {$scoreRecord->candidate->name} from '{$oldStatus}' to '{$status}' for job: {$this->job->title}"
+        );
+
+        session()->flash('success', "Status updated to {$status} successfully.");
+    }
+
+    /**
+     * Save recruiter notes, rating, and editable profile fields.
+     */
+    public function saveCandidateNotesAndRating()
+    {
+        if (!$this->selectedCandidateScore) return;
+
+        $this->selectedCandidateScore->update([
+            'candidate_notes' => $this->candidateNotes,
+            'candidate_rating' => $this->candidateRating,
+        ]);
+
+        $candidate = $this->selectedCandidateScore->candidate;
+        $candidate->update([
+            'expected_salary' => $this->editExpectedSalary ?: 'Not specified',
+            'notice_period' => $this->editNoticePeriod ?: 'Not specified',
+            'current_company' => $this->editCurrentCompany ?: 'Not specified',
+            'remote_preference' => $this->editRemotePreference ?: 'Not specified',
+            'visa_status' => $this->editVisaStatus ?: 'Not specified',
+        ]);
+
+        // Log audit log
+        \App\Models\AuditLog::logAction(
+            'Candidate Evaluation Updated',
+            "Updated notes/rating/metadata for {$candidate->name} on job: {$this->job->title}"
+        );
+
+        session()->flash('success', "Candidate details saved successfully.");
+        $this->selectedCandidateScore->refresh();
+    }
+
+    /**
+     * Toggle candidate selection for comparison view.
+     */
+    public function toggleCompareCandidate(int $scoreId)
+    {
+        if (in_array($scoreId, $this->compareCandidateIds)) {
+            $this->compareCandidateIds = array_diff($this->compareCandidateIds, [$scoreId]);
+        } else {
+            $this->compareCandidateIds[] = $scoreId;
+        }
+    }
+
+    public function startComparison()
+    {
+        if (count($this->compareCandidateIds) < 2) {
+            session()->flash('error', 'Select at least 2 candidates to compare.');
+            return;
+        }
+        $this->isComparing = true;
+    }
+
+    public function closeComparison()
+    {
+        $this->isComparing = false;
+    }
+
+    public function clearComparison()
+    {
+        $this->compareCandidateIds = [];
+        $this->isComparing = false;
+    }
+
+    /**
+     * Export shortlisted candidates to CSV.
+     */
+    public function exportShortlistedCsv()
+    {
+        $candidates = CandidateScore::with('candidate')
+            ->where('recruitment_job_id', $this->job->id)
+            ->where('candidate_status', 'Shortlisted')
+            ->get();
+
+        if ($candidates->isEmpty()) {
+            session()->flash('error', 'No shortlisted candidates found to export.');
+            return;
+        }
+
+        $headers = [
+            'Content-Type' => 'text/csv',
+            'Content-Disposition' => 'attachment; filename="shortlisted_candidates_' . $this->job->id . '.csv"',
+        ];
+
+        $callback = function () use ($candidates) {
+            $file = fopen('php://output', 'w');
+            fputcsv($file, [
+                'Name', 'Email', 'Phone', 'Overall Score', 'Skill Match', 'Experience Match', 
+                'Education Match', 'Recommendation', 'Rating', 'Expected Salary', 'Notice Period',
+                'Current Company', 'Remote Preference', 'Visa Status'
+            ]);
+
+            foreach ($candidates as $score) {
+                fputcsv($file, [
+                    $score->candidate->name,
+                    $score->candidate->email,
+                    $score->candidate->phone,
+                    round($score->score) . '%',
+                    round($score->skill_match) . '%',
+                    round($score->experience_match) . '%',
+                    round($score->education_match) . '%',
+                    $score->recommendation,
+                    $score->candidate_rating ? $score->candidate_rating . '/5' : 'N/A',
+                    $score->candidate->expected_salary ?: 'Not specified',
+                    $score->candidate->notice_period ?: 'Not specified',
+                    $score->candidate->current_company ?: 'Not specified',
+                    $score->candidate->remote_preference ?: 'Not specified',
+                    $score->candidate->visa_status ?: 'Not specified',
+                ]);
+            }
+            fclose($file);
+        };
+
+        \App\Models\AuditLog::logAction(
+            'Export Report',
+            "Exported shortlisted candidates to CSV for job: {$this->job->title}"
+        );
+
+        return response()->streamDownload($callback, 'shortlisted_candidates_' . $this->job->id . '.csv', $headers);
+    }
+
+    /**
+     * Export shortlisted candidates to Excel (XLS).
+     */
+    public function exportShortlistedExcel()
+    {
+        $candidates = CandidateScore::with('candidate')
+            ->where('recruitment_job_id', $this->job->id)
+            ->where('candidate_status', 'Shortlisted')
+            ->get();
+
+        if ($candidates->isEmpty()) {
+            session()->flash('error', 'No shortlisted candidates found to export.');
+            return;
+        }
+
+        $headers = [
+            'Content-Type' => 'application/vnd.ms-excel',
+            'Content-Disposition' => 'attachment; filename="shortlisted_candidates_' . $this->job->id . '.xls"',
+        ];
+
+        $callback = function () use ($candidates) {
+            $file = fopen('php://output', 'w');
+            fwrite($file, "<html xmlns:o=\"urn:schemas-microsoft-com:office:office\" xmlns:x=\"urn:schemas-microsoft-com:office:excel\" xmlns=\"http://www.w3.org/TR/REC-html40\">\n");
+            fwrite($file, "<head><meta http-equiv=\"Content-Type\" content=\"text/html; charset=utf-8\"></head>\n");
+            fwrite($file, "<body>\n");
+            fwrite($file, "<table border='1'>\n");
+            fwrite($file, "<tr>\n");
+            fwrite($file, "<th>Name</th><th>Email</th><th>Phone</th><th>Overall Score</th><th>Skill Match</th><th>Experience Match</th><th>Education Match</th><th>Recommendation</th><th>Rating</th><th>Expected Salary</th><th>Notice Period</th><th>Current Company</th><th>Remote Preference</th><th>Visa Status</th>\n");
+            fwrite($file, "</tr>\n");
+
+            foreach ($candidates as $score) {
+                fwrite($file, "<tr>\n");
+                fwrite($file, "<td>" . htmlspecialchars($score->candidate->name) . "</td>\n");
+                fwrite($file, "<td>" . htmlspecialchars($score->candidate->email) . "</td>\n");
+                fwrite($file, "<td>" . htmlspecialchars($score->candidate->phone) . "</td>\n");
+                fwrite($file, "<td>" . round($score->score) . "%</td>\n");
+                fwrite($file, "<td>" . round($score->skill_match) . "%</td>\n");
+                fwrite($file, "<td>" . round($score->experience_match) . "%</td>\n");
+                fwrite($file, "<td>" . round($score->education_match) . "%</td>\n");
+                fwrite($file, "<td>" . htmlspecialchars($score->recommendation) . "</td>\n");
+                fwrite($file, "<td>" . ($score->candidate_rating ? $score->candidate_rating . '/5' : 'N/A') . "</td>\n");
+                fwrite($file, "<td>" . htmlspecialchars($score->candidate->expected_salary ?: 'Not specified') . "</td>\n");
+                fwrite($file, "<td>" . htmlspecialchars($score->candidate->notice_period ?: 'Not specified') . "</td>\n");
+                fwrite($file, "<td>" . htmlspecialchars($score->candidate->current_company ?: 'Not specified') . "</td>\n");
+                fwrite($file, "<td>" . htmlspecialchars($score->candidate->remote_preference ?: 'Not specified') . "</td>\n");
+                fwrite($file, "<td>" . htmlspecialchars($score->candidate->visa_status ?: 'Not specified') . "</td>\n");
+                fwrite($file, "</tr>\n");
+            }
+            fwrite($file, "</table>\n");
+            fwrite($file, "</body>\n");
+            fwrite($file, "</html>\n");
+            fclose($file);
+        };
+
+        \App\Models\AuditLog::logAction(
+            'Export Report',
+            "Exported shortlisted candidates to Excel (XLS) for job: {$this->job->title}"
+        );
+
+        return response()->streamDownload($callback, 'shortlisted_candidates_' . $this->job->id . '.xls', $headers);
     }
 
     /**
@@ -269,6 +563,12 @@ class JobDetails extends Component
             ]);
             Log::info("JobDetails::saveJob: Job database record updated successfully.");
 
+            // Log audit log
+            \App\Models\AuditLog::logAction(
+                'Job Criteria Updated',
+                "Updated requirements and description details for job: {$this->job->title}"
+            );
+
             $candidateScores = $this->job->candidateScores;
             Log::info("JobDetails::saveJob: Resetting " . $candidateScores->count() . " applicant score statuses to 'processing' and re-queuing...");
             foreach ($candidateScores as $scoreRecord) {
@@ -285,6 +585,323 @@ class JobDetails extends Component
         }
     }
 
+    /**
+     * Switch dashboard tab.
+     */
+    public function switchTab(string $tab)
+    {
+        $this->activeTab = $tab;
+        if ($tab === 'talent_pool') {
+            $this->findTalentPoolMatches(app(OpenAIService::class));
+        }
+    }
+
+    /**
+     * Agent 5: Evaluate candidate interview notes.
+     */
+    public function evaluateInterview(int $interviewId, OpenAIService $openai)
+    {
+        if (!$this->selectedCandidateScore) return;
+        
+        $this->isEvaluatingInterview = true;
+        Log::info("JobDetails::evaluateInterview: Evaluating notes for Interview ID: {$interviewId}");
+
+        try {
+            $interview = Interview::findOrFail($interviewId);
+
+            $result = $openai->evaluateInterviewNotes(
+                $this->job->title,
+                $this->selectedCandidateScore->candidate->name,
+                $this->interviewNotesInput
+            );
+
+            $interview->update([
+                'notes' => $this->interviewNotesInput,
+                'evaluation' => $result,
+                'status' => 'completed',
+            ]);
+
+            // Update pipeline status
+            $this->selectedCandidateScore->update([
+                'candidate_status' => 'Interviewed',
+                'status_updated_at' => now(),
+            ]);
+
+            $this->reset('interviewNotesInput');
+            $this->selectedCandidateScore->refresh();
+
+            \App\Models\AuditLog::logAction(
+                'Interview Evaluated',
+                "AI evaluation completed for candidate {$this->selectedCandidateScore->candidate->name} on job: {$this->job->title}"
+            );
+
+            session()->flash('success', 'Interview notes evaluated successfully by AI Agent!');
+        } catch (\Exception $e) {
+            Log::error("JobDetails::evaluateInterview error: " . $e->getMessage());
+            session()->flash('error', 'Failed to analyze interview notes: ' . $e->getMessage());
+        } finally {
+            $this->isEvaluatingInterview = false;
+        }
+    }
+
+    /**
+     * Agent 6: Generate offer recommendation.
+     */
+    public function generateOffer(OpenAIService $openai)
+    {
+        if (!$this->selectedCandidateScore) return;
+
+        $this->isGeneratingOffer = true;
+        Log::info("JobDetails::generateOffer: Generating offer recommendation for candidate ID: {$this->selectedCandidateScore->candidate_id}");
+
+        try {
+            $candidateDetails = [
+                'name' => $this->selectedCandidateScore->candidate->name,
+                'experience_years' => $this->selectedCandidateScore->candidate->parsed_data['experience_years'] ?? 3,
+                'score' => $this->selectedCandidateScore->score,
+                'expected_salary' => $this->selectedCandidateScore->candidate->expected_salary ?? 'Not specified',
+            ];
+
+            $jobDetails = [
+                'title' => $this->job->title,
+                'experience_years' => $this->job->experience_years,
+                'required_skills' => $this->job->required_skills,
+            ];
+
+            $this->offerRecommendation = $openai->generateOfferRecommendation($candidateDetails, $jobDetails);
+
+            session()->flash('success', 'Offer recommendation generated successfully!');
+        } catch (\Exception $e) {
+            Log::error("JobDetails::generateOffer error: " . $e->getMessage());
+            session()->flash('error', 'Failed to generate offer recommendation: ' . $e->getMessage());
+        } finally {
+            $this->isGeneratingOffer = false;
+        }
+    }
+
+    /**
+     * Agent 6: Send Simulated Offer Email.
+     */
+    public function sendOfferEmail()
+    {
+        if (!$this->selectedCandidateScore || !$this->offerRecommendation) return;
+
+        $candidate = $this->selectedCandidateScore->candidate;
+
+        // Log the email in email_logs
+        \App\Models\EmailLog::create([
+            'candidate_id' => $candidate->id,
+            'to_email' => $candidate->email ?: 'no-email@example.com',
+            'subject' => "Employment Offer: {$this->job->title} at our company",
+            'body' => "Dear {$candidate->name},\n\n" .
+                     "We are pleased to offer you the position of {$this->job->title} with a suggested salary of {$this->offerRecommendation['suggested_salary']}.\n\n" .
+                     "Justification:\n{$this->offerRecommendation['justification']}\n\n" .
+                     "Benefits include:\n" . implode("\n", array_map(fn($b) => "• " . $b, $this->offerRecommendation['benefits'] ?? [])) . "\n\n" .
+                     "Please review the offer details and let us know your response.\n\n" .
+                     "Best regards,\n" .
+                     "Recruitment Team",
+            'type' => 'offer',
+            'sent_at' => now(),
+        ]);
+
+        $this->selectedCandidateScore->update([
+            'candidate_status' => 'Offer Sent',
+            'status_updated_at' => now(),
+        ]);
+
+        $this->selectedCandidateScore->refresh();
+
+        \App\Models\AuditLog::logAction(
+            'Offer Sent',
+            "Simulated offer letter email sent to {$candidate->name} for {$this->offerRecommendation['suggested_salary']}"
+        );
+
+        session()->flash('success', 'Offer letter sent successfully to candidate!');
+    }
+
+    /**
+     * Agent 3: Send Simulated Interview Reminder.
+     */
+    public function sendInterviewReminder(int $interviewId)
+    {
+        $interview = Interview::findOrFail($interviewId);
+        $emailService = app(\App\Services\EmailCommunicationService::class);
+        $emailService->sendInterviewReminderEmail($interview);
+        session()->flash('success', 'Simulated interview reminder email sent successfully!');
+    }
+
+    /**
+     * Agent 7: Find old matching candidates from talent pool.
+     */
+    public function findTalentPoolMatches(OpenAIService $openai)
+    {
+        $this->isSearchingTalentPool = true;
+        Log::info("JobDetails::findTalentPoolMatches: Finding matches for Job ID: {$this->job->id}");
+
+        try {
+            $jobText = $this->job->title . " " . implode(' ', $this->job->required_skills ?? []) . " " . $this->job->description;
+            
+            $queryVector = $openai->generateEmbedding($jobText);
+            if (empty($queryVector)) {
+                $this->talentPoolMatches = [];
+                return;
+            }
+
+            // Exclude already applied candidates
+            $appliedCandidateIds = CandidateScore::where('recruitment_job_id', $this->job->id)
+                ->pluck('candidate_id')
+                ->toArray();
+
+            $allCandidates = Candidate::whereNotIn('id', $appliedCandidateIds)
+                ->where('is_latest', true)
+                ->get();
+
+            $matches = [];
+            foreach ($allCandidates as $candidate) {
+                $candVector = $candidate->embedding;
+                $hasMatched = false;
+
+                if (is_array($candVector) && count($candVector) === 1536) {
+                    $dotProduct = 0.0;
+                    for ($i = 0; $i < 1536; $i++) {
+                        $dotProduct += $queryVector[$i] * $candVector[$i];
+                    }
+                    $similarityPercent = max(0, min(100, round(($dotProduct - 0.2) / 0.8 * 100, 1)));
+                    
+                    if ($similarityPercent >= 65) {
+                        $matches[] = [
+                            'candidate' => $candidate,
+                            'similarity' => $similarityPercent
+                        ];
+                        $hasMatched = true;
+                    }
+                }
+
+                if (!$hasMatched) {
+                    // Skill-based keyword fallback match
+                    $jobSkills = array_map('strtolower', $this->job->required_skills ?? []);
+                    $candSkills = array_map('strtolower', $candidate->parsed_data['skills'] ?? []);
+                    $intersection = array_intersect($jobSkills, $candSkills);
+                    
+                    if (count($intersection) > 0) {
+                        $matchPercent = round((count($intersection) / max(1, count($jobSkills))) * 100, 1);
+                        if ($matchPercent >= 20) {
+                            $matches[] = [
+                                'candidate' => $candidate,
+                                'similarity' => $matchPercent
+                             ];
+                        }
+                    }
+                }
+            }
+
+            usort($matches, function ($a, $b) {
+                return $b['similarity'] <=> $a['similarity'];
+            });
+
+            $this->talentPoolMatches = $matches;
+            Log::info("JobDetails::findTalentPoolMatches: Found " . count($matches) . " talent pool matches.");
+        } catch (\Exception $e) {
+            Log::error("JobDetails::findTalentPoolMatches error: " . $e->getMessage());
+        } finally {
+            $this->isSearchingTalentPool = false;
+        }
+    }
+
+    /**
+     * Agent 7: Add candidate from talent pool to this job.
+     */
+    public function addTalentPoolCandidate(int $candidateId)
+    {
+        Log::info("JobDetails::addTalentPoolCandidate: Adding Candidate {$candidateId} to Job: {$this->job->id}");
+        
+        $exists = CandidateScore::where('recruitment_job_id', $this->job->id)
+            ->where('candidate_id', $candidateId)
+            ->exists();
+
+        if (!$exists) {
+            $candidate = Candidate::findOrFail($candidateId);
+
+            CandidateScore::create([
+                'recruitment_job_id' => $this->job->id,
+                'candidate_id' => $candidateId,
+                'status' => 'processing',
+            ]);
+
+            \App\Jobs\ProcessResumeJob::dispatch($candidate, $this->job);
+
+            \App\Models\AuditLog::logAction(
+                'Talent Pool Match Added',
+                "Added candidate {$candidate->name} from talent pool to job: {$this->job->title}"
+            );
+
+            session()->flash('success', "Candidate {$candidate->name} added to pipeline. Re-evaluating score...");
+        }
+
+        $this->talentPoolMatches = array_filter($this->talentPoolMatches, function ($item) use ($candidateId) {
+            return $item['candidate']->id !== $candidateId;
+        });
+    }
+
+    /**
+     * Agent 8: Recruiter Copilot natural language queries.
+     */
+    public function askCopilot(OpenAIService $openai)
+    {
+        $query = trim($this->copilotQuery);
+        if (empty($query)) return;
+
+        $this->isCopilotResponding = true;
+        $this->copilotMatchedCandidateIds = [];
+        
+        Log::info("JobDetails::askCopilot: Query: '{$query}'");
+
+        try {
+            $candidatesList = CandidateScore::with('candidate')
+                ->where('recruitment_job_id', $this->job->id)
+                ->where('status', 'completed')
+                ->whereHas('candidate', function($q) {
+                    $q->where('is_latest', true);
+                })
+                ->get()
+                ->map(function ($score) {
+                    return [
+                        'id' => $score->id,
+                        'name' => $score->candidate->name,
+                        'experience_years' => $score->candidate->parsed_data['experience_years'] ?? 0,
+                        'skills' => $score->candidate->parsed_data['skills'] ?? [],
+                        'expected_salary' => $score->candidate->expected_salary ?? 'Not specified',
+                        'notice_period' => $score->candidate->notice_period ?? 'Not specified',
+                        'score' => $score->score,
+                    ];
+                })
+                ->toArray();
+
+            $result = $openai->queryCopilot($query, $candidatesList);
+
+            $this->copilotResponse = $result['answer'] ?? 'No response generated.';
+            $this->copilotMatchedCandidateIds = $result['matched_candidate_ids'] ?? [];
+
+            \App\Models\AuditLog::logAction(
+                'Copilot Consulted',
+                "Recruiter queried Copilot: \"{$query}\""
+            );
+        } catch (\Exception $e) {
+            Log::error("JobDetails::askCopilot error: " . $e->getMessage());
+            $this->copilotResponse = "Error processing query: " . $e->getMessage();
+        } finally {
+            $this->isCopilotResponding = false;
+        }
+    }
+
+    /**
+     * Clear Copilot chat search.
+     */
+    public function clearCopilot()
+    {
+        $this->reset('copilotQuery', 'copilotResponse', 'copilotMatchedCandidateIds');
+    }
+
     public function render()
     {
         // Refresh job details
@@ -295,9 +912,12 @@ class JobDetails extends Component
             $this->selectedCandidateScore->refresh();
         }
 
-        // Fetch candidate lists sorted by score desc
+        // Fetch candidate lists sorted by score desc (show only the latest versions)
         $candidateScores = CandidateScore::with('candidate')
             ->where('recruitment_job_id', $this->job->id)
+            ->whereHas('candidate', function ($query) {
+                $query->where('is_latest', true);
+            })
             ->orderByRaw("CASE WHEN status = 'processing' THEN 1 ELSE 0 END ASC") // show processing at the top
             ->orderBy('score', 'desc')
             ->get();

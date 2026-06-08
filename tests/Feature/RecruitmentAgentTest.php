@@ -315,4 +315,331 @@ class RecruitmentAgentTest extends TestCase
         // Cleanup config
         config(['services.openai.key' => null]);
     }
+
+    /**
+     * Test Grok provider selection and endpoint configuration.
+     */
+    public function test_grok_provider_initialization_and_configuration(): void
+    {
+        // Set configuration temporarily
+        config([
+            'services.openai.key' => null,
+            'services.grok.key' => 'test_grok_key',
+            'services.grok.base_url' => 'https://api.x.ai/v1',
+            'services.grok.model' => 'grok-beta',
+            'services.llm_provider' => 'grok',
+        ]);
+        
+        $service = new OpenAIService();
+        
+        $this->assertEquals('grok', $service->getProvider());
+        $this->assertFalse($service->isMockMode());
+        
+        // Cleanup
+        config([
+            'services.grok.key' => null,
+            'services.llm_provider' => 'openai',
+        ]);
+    }
+
+    /**
+     * Test Grok API request sends to correct base URL.
+     */
+    public function test_grok_chat_completion_api_request(): void
+    {
+        config([
+            'services.openai.key' => null,
+            'services.grok.key' => 'test_grok_key',
+            'services.grok.base_url' => 'https://api.x.ai/test/v1',
+            'services.grok.model' => 'grok-beta',
+            'services.llm_provider' => 'grok',
+        ]);
+
+        \Illuminate\Support\Facades\Http::fake([
+            'https://api.x.ai/test/v1/*' => \Illuminate\Support\Facades\Http::response([
+                'choices' => [
+                    [
+                        'message' => [
+                            'content' => json_encode([
+                                'title' => 'Grok Job Analyzer',
+                                'required_skills' => ['PHP', 'Vue'],
+                                'preferred_skills' => ['Docker'],
+                                'experience_years' => 4,
+                                'certifications' => [],
+                                'analysis_summary' => 'Analyzed by Grok'
+                            ])
+                        ]
+                    ]
+                ]
+            ], 200)
+        ]);
+
+        $service = new OpenAIService();
+        $result = $service->analyzeJob('Need a PHP developer with 4 years experience.');
+
+        $this->assertEquals('Grok Job Analyzer', $result['title']);
+        $this->assertContains('PHP', $result['required_skills']);
+        $this->assertEquals(4, $result['experience_years']);
+
+        // Check that Http fake actually captured request to grok endpoint
+        \Illuminate\Support\Facades\Http::assertSent(function (\Illuminate\Http\Client\Request $request) {
+            return str_contains($request->url(), 'https://api.x.ai/test/v1/chat/completions') &&
+                   $request->hasHeader('Authorization', 'Bearer test_grok_key');
+        });
+
+        // Cleanup
+        config([
+            'services.grok.key' => null,
+            'services.llm_provider' => 'openai',
+        ]);
+    }
+
+    /**
+     * Test embedding generation fallback in Grok mode.
+     */
+    public function test_embedding_fallback_in_grok_mode(): void
+    {
+        // Case 1: Grok active, OpenAI key not present => should use Mock embeddings
+        config([
+            'services.openai.key' => null,
+            'services.grok.key' => 'test_grok_key',
+            'services.llm_provider' => 'grok',
+        ]);
+
+        $service = new OpenAIService();
+        $embedding = $service->generateEmbedding('Test text');
+        $this->assertCount(1536, $embedding);
+        $this->assertIsArray($embedding);
+
+        // Case 2: Grok active, OpenAI key IS present => should use OpenAI api key to fetch embeddings
+        config([
+            'services.openai.key' => 'test_openai_key_for_embeddings',
+            'services.grok.key' => 'test_grok_key',
+            'services.llm_provider' => 'grok',
+        ]);
+
+        \Illuminate\Support\Facades\Http::fake([
+            'https://api.openai.com/v1/*' => \Illuminate\Support\Facades\Http::response([
+                'data' => [
+                    [
+                        'embedding' => array_fill(0, 1536, 0.42)
+                    ]
+                ]
+            ], 200)
+        ]);
+
+        $service2 = new OpenAIService();
+        $embedding2 = $service2->generateEmbedding('Test text');
+        $this->assertEquals(0.42, $embedding2[0]);
+
+        \Illuminate\Support\Facades\Http::assertSent(function (\Illuminate\Http\Client\Request $request) {
+            return str_contains($request->url(), 'https://api.openai.com/v1/embeddings') &&
+                   $request->hasHeader('Authorization', 'Bearer test_openai_key_for_embeddings');
+        });
+
+        // Cleanup
+        config([
+            'services.grok.key' => null,
+            'services.openai.key' => null,
+            'services.llm_provider' => 'openai',
+        ]);
+    }
+
+    /**
+     * Test pipeline status update workflow and audit log entry.
+     */
+    public function test_candidate_pipeline_status_workflow(): void
+    {
+        $recJob = RecruitmentJob::create([
+            'title' => 'Laravel Developer',
+            'description' => 'Original Description for Laravel Developer Role with years of experience.',
+            'required_skills' => ['Laravel'],
+            'preferred_skills' => ['AWS'],
+            'experience_years' => 3,
+        ]);
+
+        $candidate = Candidate::create([
+            'name' => 'Jane Doe',
+            'resume_path' => 'resumes/jane.pdf',
+        ]);
+
+        $candScore = CandidateScore::create([
+            'recruitment_job_id' => $recJob->id,
+            'candidate_id' => $candidate->id,
+            'status' => 'completed',
+            'candidate_status' => 'New',
+        ]);
+
+        \Livewire\Livewire::test(\App\Livewire\JobDetails::class, ['id' => $recJob->id])
+            ->call('updateCandidateStatus', $candScore->id, 'Shortlisted')
+            ->assertHasNoErrors();
+
+        $candScore->refresh();
+        $this->assertEquals('Shortlisted', $candScore->candidate_status);
+        $this->assertNotNull($candScore->status_updated_at);
+
+        // Check audit log was created
+        $this->assertEquals(1, \App\Models\AuditLog::count());
+        $log = \App\Models\AuditLog::first();
+        $this->assertEquals('Candidate Status Changed', $log->action);
+        $this->assertStringContainsString('Jane Doe', $log->description);
+    }
+
+    /**
+     * Test candidate notes and rating persistence along with profile editing.
+     */
+    public function test_candidate_notes_ratings_and_profile_updates(): void
+    {
+        $recJob = RecruitmentJob::create([
+            'title' => 'Laravel Developer',
+            'description' => 'Original Description for Laravel Developer Role with years of experience.',
+            'required_skills' => ['Laravel'],
+            'preferred_skills' => ['AWS'],
+            'experience_years' => 3,
+        ]);
+
+        $candidate = Candidate::create([
+            'name' => 'Jane Doe',
+            'resume_path' => 'resumes/jane.pdf',
+        ]);
+
+        $candScore = CandidateScore::create([
+            'recruitment_job_id' => $recJob->id,
+            'candidate_id' => $candidate->id,
+            'status' => 'completed',
+        ]);
+
+        \Livewire\Livewire::test(\App\Livewire\JobDetails::class, ['id' => $recJob->id])
+            ->call('selectCandidate', $candScore->id)
+            ->set('candidateNotes', 'Impressive technical skills, but lacks AWS experience.')
+            ->set('candidateRating', 4)
+            ->set('editExpectedSalary', '₹12 LPA')
+            ->set('editNoticePeriod', '15 Days')
+            ->call('saveCandidateNotesAndRating')
+            ->assertHasNoErrors();
+
+        $candScore->refresh();
+        $candidate->refresh();
+
+        $this->assertEquals('Impressive technical skills, but lacks AWS experience.', $candScore->candidate_notes);
+        $this->assertEquals(4, $candScore->candidate_rating);
+        $this->assertEquals('₹12 LPA', $candidate->expected_salary);
+        $this->assertEquals('15 Days', $candidate->notice_period);
+    }
+
+    /**
+     * Test resume modified versioning behavior.
+     */
+    public function test_resume_modified_versioning_flow(): void
+    {
+        Storage::fake('local');
+
+        $recJob = RecruitmentJob::create([
+            'title' => 'Laravel Developer',
+            'description' => "Laravel Developer\nExperience: 3+ years\nSkills: Laravel, MySQL",
+            'required_skills' => ['Laravel'],
+            'preferred_skills' => [],
+            'experience_years' => 3,
+        ]);
+
+        // Upload first version
+        $candidate1 = Candidate::create([
+            'name' => 'Jane Doe',
+            'email' => 'jane@example.com',
+            'resume_path' => 'resumes/jane1.pdf',
+            'file_hash' => 'hash111',
+            'version' => 1,
+            'is_latest' => true,
+        ]);
+
+        $candScore1 = CandidateScore::create([
+            'recruitment_job_id' => $recJob->id,
+            'candidate_id' => $candidate1->id,
+            'status' => 'completed',
+        ]);
+
+        // Simulate upload of modified resume (same email, different hash)
+        Storage::disk('local')->put('resumes/jane2.pdf', 'dummy content');
+
+        $candidate2 = Candidate::create([
+            'name' => 'Jane Doe',
+            'email' => 'jane@example.com',
+            'resume_path' => 'resumes/jane2.pdf',
+            'file_hash' => 'hash222',
+        ]);
+
+        $candScore2 = CandidateScore::create([
+            'recruitment_job_id' => $recJob->id,
+            'candidate_id' => $candidate2->id,
+            'status' => 'processing',
+        ]);
+
+        $parser = $this->createMock(DocumentParserService::class);
+        $parser->method('parse')->willReturn('Jane Doe resume text');
+        
+        // Mock OpenAIService to return email jane@example.com but with different extra details
+        $openai = $this->createMock(OpenAIService::class);
+        $openai->method('parseResume')->willReturn([
+            'name' => 'Jane Doe',
+            'email' => 'jane@example.com',
+            'phone' => '1234567890',
+            'skills' => ['Laravel', 'AWS'],
+            'experience_years' => 4,
+            'education' => ['B.S.'],
+            'summary' => 'Updated summary',
+            'expected_salary' => '₹15 LPA',
+            'notice_period' => 'Immediate',
+            'current_company' => 'Acme Corp',
+            'remote_preference' => 'Remote',
+            'visa_status' => 'Citizen',
+        ]);
+        $openai->method('generateEmbedding')->willReturn(array_fill(0, 1536, 0.1));
+        $openai->method('matchAndAnalyze')->willReturn([
+            'total_score' => 90.0,
+            'skill_match' => 95.0,
+            'experience_match' => 90.0,
+            'education_match' => 80.0,
+            'recommendation' => 'Strong Hire',
+            'summary' => 'Excellent candidate',
+            'strengths' => [],
+            'concerns' => [],
+            'interview_questions' => [],
+        ]);
+
+        $job = new ProcessResumeJob($candidate2, $recJob);
+        $job->handle($parser, $openai);
+
+        $candidate1->refresh();
+        $candidate2->refresh();
+        $candScore2->refresh();
+
+        $this->assertFalse($candidate1->is_latest);
+        $this->assertTrue($candidate2->is_latest);
+        $this->assertEquals(2, $candidate2->version);
+        $this->assertEquals('completed', $candScore2->status);
+    }
+
+    /**
+     * Test mock analysis fallback for mechanical and data science domains.
+     */
+    public function test_mock_domain_analysis_fallbacks(): void
+    {
+        $openai = new OpenAIService();
+
+        // 1. Mechanical role keyword extraction
+        $mechAnalysis1 = $openai->analyzeJob('Seeking a candidate skilled in SolidWorks and AutoCAD.');
+        $this->assertContains('SolidWorks', $mechAnalysis1['required_skills']);
+        $this->assertContains('AutoCAD', $mechAnalysis1['required_skills']);
+
+        // 2. Mechanical role context fallback (no exact keywords match, falls back to CAD/Mechanical)
+        $mechAnalysis2 = $openai->analyzeJob('Seeking a mechanical designer role.');
+        $this->assertContains('SolidWorks', $mechAnalysis2['required_skills']);
+        $this->assertContains('CAD Design', $mechAnalysis2['required_skills']);
+
+        // 3. Data Science resume (context fallback)
+        $dsResume = $openai->parseResume('Jane Doe. Data scientist specializing in AI systems.');
+        $this->assertContains('Python', $dsResume['skills']);
+        $this->assertContains('Data Science', $dsResume['skills']);
+    }
 }
+

@@ -9,7 +9,9 @@
 </head>
 <body>
     @php
-        $isOpenAiConfigured = !app(\App\Services\OpenAIService::class)->isMockMode();
+        $service = app(\App\Services\OpenAIService::class);
+        $isAiConfigured = !$service->isMockMode();
+        $providerName = $service->getProvider() === 'grok' ? 'Grok' : 'OpenAI';
         $isQuotaExceeded = \Illuminate\Support\Facades\Cache::get('openai_quota_exceeded', false);
     @endphp
 
@@ -28,17 +30,17 @@
             </a>
             
             <div style="display: flex; align-items: center; gap: 1rem;">
-                @if(!$isOpenAiConfigured)
+                @if(!$isAiConfigured)
                     <span class="badge badge-warning" style="font-size: 0.8rem; text-transform: none; letter-spacing: normal;">
                         ⚠️ Running in Mock AI Mode
                     </span>
                 @elseif($isQuotaExceeded)
                     <span class="badge badge-danger" style="font-size: 0.8rem; text-transform: none; letter-spacing: normal;">
-                        ⚠️ OpenAI Quota Exceeded (Mock Mode)
+                        ⚠️ {{ $providerName }} Quota Exceeded (Mock Mode)
                     </span>
                 @else
                     <span class="badge badge-success" style="font-size: 0.8rem; text-transform: none; letter-spacing: normal;">
-                        ⚡ OpenAI Connected
+                        ⚡ {{ $providerName }} Connected
                     </span>
                 @endif
 
@@ -51,13 +53,13 @@
     </header>
 
     <main class="app-container">
-        @if(!$isOpenAiConfigured)
+        @if(!$isAiConfigured)
             <div class="alert alert-warning" style="margin-bottom: 2rem;">
-                <strong>Notice:</strong> The <code>OPENAI_API_KEY</code> is not set in your <code>.env</code> file. The recruitment agents are running in <strong>Mock AI Fallback Mode</strong> using keyword analysis and regex parsers. Insert a valid API key in your <code>.env</code> file to enable full GPT analysis, semantic embeddings, and automated interview question generation.
+                <strong>Notice:</strong> Neither the <code>OPENAI_API_KEY</code> nor the <code>GROK_API_KEY</code> is configured in your <code>.env</code> file. The recruitment agents are running in <strong>Mock AI Fallback Mode</strong> using keyword analysis and regex parsers. Insert a valid API key in your <code>.env</code> file to enable full AI analysis, semantic embeddings, and automated interview question generation.
             </div>
         @elseif($isQuotaExceeded)
             <div class="alert alert-danger" style="margin-bottom: 2rem;">
-                <strong>Billing/Quota Limit Reached:</strong> Your OpenAI API key is configured, but the API returned an <code>insufficient_quota</code> error (billing limit exceeded). The recruitment agents are temporarily running in <strong>Mock AI Fallback Mode</strong>. Please check your OpenAI billing plan and credits.
+                <strong>Billing/Quota Limit Reached:</strong> Your {{ $providerName }} API key is configured, but the API returned an <code>insufficient_quota</code> error (billing limit exceeded). The recruitment agents are temporarily running in <strong>Mock AI Fallback Mode</strong>. Please check your billing plan and credits.
             </div>
         @endif
 

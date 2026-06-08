@@ -45,6 +45,11 @@ class JobList extends Component
 
             Log::info("JobList::createJob: Successfully created RecruitmentJob ID: {$job->id}");
 
+            \App\Models\AuditLog::logAction(
+                'Job Posting Created',
+                "Created new job posting for: '{$this->title}'"
+            );
+
             $this->reset(['title', 'description']);
             session()->flash('success', 'Job posting created and analyzed successfully!');
         } catch (\Exception $e) {
@@ -69,10 +74,13 @@ class JobList extends Component
                 return $job;
             });
 
+        $auditLogs = \App\Models\AuditLog::latest()->take(10)->get();
+
         Log::debug("JobList::render: Loaded jobs list dashboard. Found " . $jobs->count() . " jobs.");
 
         return view('livewire.job-list', [
-            'jobs' => $jobs
+            'jobs' => $jobs,
+            'auditLogs' => $auditLogs,
         ])->layout('components.layouts.app');
     }
 }

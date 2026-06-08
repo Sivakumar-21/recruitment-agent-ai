@@ -8,7 +8,9 @@ use Exception;
 
 class OpenAIService
 {
+    protected ?string $provider = 'openai';
     protected ?string $apiKey;
+    protected string $baseUrl = 'https://api.openai.com/v1';
     protected string $model = 'gpt-4o-mini';
     protected string $embeddingModel = 'text-embedding-3-small';
 
@@ -17,24 +19,64 @@ class OpenAIService
      * You can easily add more skills to this array here in the future.
      */
     public static array $mockSkills = [
-        // Web & Backend
-        'Laravel', 'PHP', 'MySQL', 'React', 'Vue.js', 'Vue', 'AWS', 'Docker', 'Python', 'Javascript', 'REST API', 'Git', 'HTML', 'CSS', 'Tailwind', 'Typescript', 'Node', 'Java', 'Spring', 'Go',
-        // Electronics & Embedded
-        'Arduino', 'ESP32', 'STM32', 'Raspberry Pi', 'PCB Design', 'PCB', 'IoT', 'Microcontrollers', 'Embedded Systems', 'Circuits', 'Schematics', 'Circuit Theory', 'Digital Systems', 'Analog Systems'
+        // Web & Backend Software
+        'Laravel', 'PHP', 'MySQL', 'React', 'Vue.js', 'Vue', 'AWS', 'Docker', 'Python', 'Javascript', 'REST API', 'Git', 'HTML', 'CSS', 'Tailwind', 'Typescript', 'Node', 'Java', 'Spring', 'Go', 'Ruby', 'Rails', 'C#', '.NET', 'ASP.NET', 'PostgreSQL', 'MongoDB', 'Redis', 'GraphQL',
+        
+        // Systems, DevOps & Cloud
+        'Kubernetes', 'Terraform', 'CI/CD', 'Jenkins', 'Ansible', 'Linux', 'Bash', 'Azure', 'GCP', 'Nginx', 'Apache', 'Prometheus', 'Grafana',
+        
+        // Data Science & AI/ML
+        'Machine Learning', 'Data Science', 'Deep Learning', 'PyTorch', 'TensorFlow', 'Pandas', 'NumPy', 'Scikit-learn', 'NLP', 'Computer Vision', 'R', 'SQL', 'Hadoop', 'Spark',
+        
+        // Electronics, Hardware & Electrical
+        'Arduino', 'ESP32', 'STM32', 'Raspberry Pi', 'PCB Design', 'PCB', 'IoT', 'Microcontrollers', 'Embedded Systems', 'Circuits', 'Schematics', 'Circuit Theory', 'Digital Systems', 'Analog Systems', 'Firmware', 'VHDL', 'Verilog', 'FPGA', 'Altium', 'Cadence', 'Oscilloscope', 'MATLAB', 'LabVIEW', 'PLC', 'SCADA', 'Power Electronics', 'Control Systems', 'RF Design',
+        
+        // Mechanical, CAD & Engineering
+        'SolidWorks', 'AutoCAD', 'CAD Design', 'Finite Element Analysis', 'FEA', 'Thermodynamics', 'Mechanical Design', 'CNC', 'Robotics', 'Fluid Dynamics',
+        
+        // Business, Project Management & Quality
+        'Agile', 'Scrum', 'Project Management', 'Product Management', 'Jira', 'Confluence', 'Communication', 'QA Testing', 'Selenium', 'Manual Testing', 'SDLC'
     ];
 
     public function __construct()
     {
-        $this->apiKey = config('services.openai.key') ?: env('OPENAI_API_KEY');
-        if ($this->apiKey === 'your_openai_api_key_here' || empty($this->apiKey)) {
-            $this->apiKey = null;
+        $openaiKey = config('services.openai.key');
+        if ($openaiKey === 'your_openai_api_key_here' || empty($openaiKey)) {
+            $openaiKey = null;
+        }
+
+        $grokKey = config('services.grok.key');
+        if ($grokKey === 'your_grok_api_key_here' || empty($grokKey)) {
+            $grokKey = null;
+        }
+
+        $configuredProvider = config('services.llm_provider', 'openai');
+
+        if ($configuredProvider === 'grok' || ($grokKey && !$openaiKey)) {
+            $this->provider = 'grok';
+            $this->apiKey = $grokKey;
+            $this->baseUrl = config('services.grok.base_url') ?: 'https://api.x.ai/v1';
+            $this->model = config('services.grok.model') ?: 'grok-beta';
+        } else {
+            $this->provider = 'openai';
+            $this->apiKey = $openaiKey;
+            $this->baseUrl = 'https://api.openai.com/v1';
+            $this->model = 'gpt-4o-mini';
         }
 
         if ($this->isMockMode()) {
-            Log::info("OpenAIService: INITIALIZED IN MOCK MODE (No active OpenAI API key found). Mock heuristics will be used.");
+            Log::info("OpenAIService: INITIALIZED IN MOCK MODE (No active API key found for provider '{$this->provider}'). Mock heuristics will be used.");
         } else {
-            Log::info("OpenAIService: INITIALIZED IN LIVE MODE (OpenAI API key present). Using model '{$this->model}' and embedding model '{$this->embeddingModel}'.");
+            Log::info("OpenAIService: INITIALIZED IN LIVE MODE (using provider '{$this->provider}'). Base URL: {$this->baseUrl}, Model: {$this->model}.");
         }
+    }
+
+    /**
+     * Determine the active provider.
+     */
+    public function getProvider(): string
+    {
+        return $this->provider;
     }
 
     /**
@@ -55,7 +97,12 @@ class OpenAIService
         
         $startTime = microtime(true);
 
-        if ($this->isMockMode()) {
+        $openaiKey = config('services.openai.key');
+        if (empty($openaiKey) || $openaiKey === 'your_openai_api_key_here') {
+            $openaiKey = null;
+        }
+
+        if (is_null($openaiKey)) {
             Log::debug("OpenAIService::generateEmbedding: Running in MOCK MODE. Generating deterministic mock embedding vector...");
             $words = str_word_count(strtolower($text), 1);
             $vector = array_fill(0, 1536, 0.0);
@@ -86,7 +133,7 @@ class OpenAIService
             Log::debug("OpenAIService::generateEmbedding: Sending POST request to OpenAI embeddings endpoint (model: {$this->embeddingModel}). Truncated size: " . strlen($truncatedText) . " chars.");
             
             $response = Http::withHeaders([
-                'Authorization' => 'Bearer ' . $this->apiKey,
+                'Authorization' => 'Bearer ' . $openaiKey,
                 'Content-Type' => 'application/json',
             ])->post('https://api.openai.com/v1/embeddings', [
                 'model' => $this->embeddingModel,
@@ -127,11 +174,7 @@ class OpenAIService
         $startTime = microtime(true);
 
         if ($this->isMockMode()) {
-            Log::debug("OpenAIService::analyzeJob: API key missing. Invoking Mock Job Analysis Agent...");
-            $result = $this->mockJobAnalysis($description);
-            $duration = round(microtime(true) - $startTime, 3);
-            Log::info("OpenAIService::analyzeJob: Mock job analysis completed in {$duration}s. Title: '{$result['title']}', Required Skills: " . count($result['required_skills']));
-            return $result;
+            throw new Exception("API key is not configured for provider {$this->provider}. Mock mode is disabled.");
         }
 
         $prompt = "Analyze this job description and extract requirements. " .
@@ -142,11 +185,11 @@ class OpenAIService
                   "Job Description:\n" . $description;
 
         try {
-            Log::debug("OpenAIService::analyzeJob: Sending POST request to OpenAI Chat Completion (model: {$this->model}) for job analysis...");
+            Log::debug("OpenAIService::analyzeJob: Sending POST request to {$this->provider} Chat Completion (model: {$this->model}) for job analysis...");
             $response = Http::withHeaders([
                 'Authorization' => 'Bearer ' . $this->apiKey,
                 'Content-Type' => 'application/json',
-            ])->post('https://api.openai.com/v1/chat/completions', [
+            ])->post($this->baseUrl . '/chat/completions', [
                 'model' => $this->model,
                 'messages' => [
                     ['role' => 'system', 'content' => 'You are an expert technical recruiter.'],
@@ -161,20 +204,20 @@ class OpenAIService
             if ($response->successful()) {
                 $this->clearQuotaExceeded();
                 $rawContent = $response->json('choices.0.message.content');
-                Log::debug("OpenAIService::analyzeJob: OpenAI API response received. Raw content: {$rawContent}");
+                Log::debug("OpenAIService::analyzeJob: {$this->provider} API response received. Raw content: {$rawContent}");
                 
                 $data = json_decode($rawContent, true);
                 if (is_array($data)) {
-                    Log::info("OpenAIService::analyzeJob: Job analysis completed successfully by OpenAI in {$duration}s. Title: '" . ($data['title'] ?? 'N/A') . "', Required skills count: " . count($data['required_skills'] ?? []));
+                    Log::info("OpenAIService::analyzeJob: Job analysis completed successfully by {$this->provider} in {$duration}s. Title: '" . ($data['title'] ?? 'N/A') . "', Required skills count: " . count($data['required_skills'] ?? []));
                     return $data;
                 }
             }
             $this->handleQuotaExceeded($response->body());
             throw new Exception("Failed to analyze job: " . $response->body());
         } catch (Exception $e) {
-            Log::error("OpenAIService::analyzeJob: Job analysis exception: " . $e->getMessage() . " - Falling back to Mock Job Analysis.");
+            Log::error("OpenAIService::analyzeJob: Job analysis exception: " . $e->getMessage());
             $this->handleQuotaExceeded($e->getMessage());
-            return $this->mockJobAnalysis($description);
+            throw $e;
         }
     }
 
@@ -188,26 +231,26 @@ class OpenAIService
         $startTime = microtime(true);
 
         if ($this->isMockMode()) {
-            Log::debug("OpenAIService::parseResume: API key missing. Invoking Mock Resume Parser Agent...");
-            $result = $this->mockResumeParsing($text);
-            $duration = round(microtime(true) - $startTime, 3);
-            Log::info("OpenAIService::parseResume: Mock resume parser completed in {$duration}s. Name: '{$result['name']}', Email: '{$result['email']}', Exp: {$result['experience_years']} years");
-            return $result;
+            throw new Exception("API key is not configured for provider {$this->provider}. Mock mode is disabled.");
         }
 
         $prompt = "Parse the following resume text and extract candidate details. " .
                   "You MUST return a JSON object with the exact keys: " .
                   "'name' (string), 'email' (string), 'phone' (string), 'skills' (array of strings), " .
-                  "'experience_years' (integer), 'education' (array of strings), and 'summary' (string). " .
+                  "'experience_years' (integer), 'education' (array of strings), 'summary' (string), " .
+                  "'expected_salary' (string), 'notice_period' (string), 'current_company' (string), " .
+                  "'remote_preference' (string), 'visa_status' (string), and " .
+                  "'work_experience' (array of objects, where each object has keys: 'company' (string), 'role' (string), 'duration' (string), and 'description' (string)). " .
+                  "If any field like expected_salary, notice_period, current_company, remote_preference, or visa_status is not found in the resume, set its value to 'Not specified'. " .
                   "Do not wrap the output in markdown code blocks or return anything other than JSON.\n\n" .
                   "Resume:\n" . $text;
 
         try {
-            Log::debug("OpenAIService::parseResume: Sending POST request to OpenAI Chat Completion (model: {$this->model}) for resume parsing...");
+            Log::debug("OpenAIService::parseResume: Sending POST request to {$this->provider} Chat Completion (model: {$this->model}) for resume parsing...");
             $response = Http::withHeaders([
                 'Authorization' => 'Bearer ' . $this->apiKey,
                 'Content-Type' => 'application/json',
-            ])->post('https://api.openai.com/v1/chat/completions', [
+            ])->post($this->baseUrl . '/chat/completions', [
                 'model' => $this->model,
                 'messages' => [
                     ['role' => 'system', 'content' => 'You are an expert resume parsing tool.'],
@@ -222,20 +265,20 @@ class OpenAIService
             if ($response->successful()) {
                 $this->clearQuotaExceeded();
                 $rawContent = $response->json('choices.0.message.content');
-                Log::debug("OpenAIService::parseResume: OpenAI API response received. Raw content: {$rawContent}");
+                Log::debug("OpenAIService::parseResume: {$this->provider} API response received. Raw content: {$rawContent}");
 
                 $data = json_decode($rawContent, true);
                 if (is_array($data)) {
-                    Log::info("OpenAIService::parseResume: Resume parsing completed successfully by OpenAI in {$duration}s. Name: '" . ($data['name'] ?? 'N/A') . "', Email: '" . ($data['email'] ?? 'N/A') . "'");
+                    Log::info("OpenAIService::parseResume: Resume parsing completed successfully by {$this->provider} in {$duration}s. Name: '" . ($data['name'] ?? 'N/A') . "', Email: '" . ($data['email'] ?? 'N/A') . "'");
                     return $data;
                 }
             }
             $this->handleQuotaExceeded($response->body());
             throw new Exception("Failed to parse resume: " . $response->body());
         } catch (Exception $e) {
-            Log::error("OpenAIService::parseResume: Resume parsing exception: " . $e->getMessage() . " - Falling back to Mock Resume Parser.");
+            Log::error("OpenAIService::parseResume: Resume parsing exception: " . $e->getMessage());
             $this->handleQuotaExceeded($e->getMessage());
-            return $this->mockResumeParsing($text);
+            throw $e;
         }
     }
 
@@ -250,11 +293,7 @@ class OpenAIService
         $startTime = microtime(true);
 
         if ($this->isMockMode()) {
-            Log::debug("OpenAIService::matchAndAnalyze: API key missing. Invoking Mock Candidate Matching Agent...");
-            $result = $this->mockMatching($jobAnalysis, $resumeData);
-            $duration = round(microtime(true) - $startTime, 3);
-            Log::info("OpenAIService::matchAndAnalyze: Mock matching completed in {$duration}s. Total Score: {$result['total_score']}%, Recommendation: '{$result['recommendation']}'");
-            return $result;
+            throw new Exception("API key is not configured for provider {$this->provider}. Mock mode is disabled.");
         }
 
         $prompt = "Compare a candidate's resume data against the job requirements and calculate match scores.\n\n" .
@@ -281,11 +320,11 @@ class OpenAIService
                   "Do not wrap output in markdown code blocks.";
 
         try {
-            Log::debug("OpenAIService::matchAndAnalyze: Sending POST request to OpenAI Chat Completion (model: {$this->model}) for candidate matching evaluation...");
+            Log::debug("OpenAIService::matchAndAnalyze: Sending POST request to {$this->provider} Chat Completion (model: {$this->model}) for candidate matching evaluation...");
             $response = Http::withHeaders([
                 'Authorization' => 'Bearer ' . $this->apiKey,
                 'Content-Type' => 'application/json',
-            ])->post('https://api.openai.com/v1/chat/completions', [
+            ])->post($this->baseUrl . '/chat/completions', [
                 'model' => $this->model,
                 'messages' => [
                     ['role' => 'system', 'content' => 'You are a candidate matching agent.'],
@@ -300,22 +339,22 @@ class OpenAIService
             if ($response->successful()) {
                 $this->clearQuotaExceeded();
                 $rawContent = $response->json('choices.0.message.content');
-                Log::debug("OpenAIService::matchAndAnalyze: OpenAI API response received. Raw content: {$rawContent}");
+                Log::debug("OpenAIService::matchAndAnalyze: {$this->provider} API response received. Raw content: {$rawContent}");
 
                 $data = json_decode($rawContent, true);
                 if (is_array($data)) {
                     // Calculate total score using formula: Score = 0.6*Skill + 0.3*Exp + 0.1*Edu
                     $data['total_score'] = 0.6 * ($data['skill_match'] ?? 0) + 0.3 * ($data['experience_match'] ?? 0) + 0.1 * ($data['education_match'] ?? 0);
-                    Log::info("OpenAIService::matchAndAnalyze: Candidate matching completed successfully by OpenAI in {$duration}s. Total Score: {$data['total_score']}%, Recommendation: '{$data['recommendation']}'");
+                    Log::info("OpenAIService::matchAndAnalyze: Candidate matching completed successfully by {$this->provider} in {$duration}s. Total Score: {$data['total_score']}%, Recommendation: '{$data['recommendation']}'");
                     return $data;
                 }
             }
             $this->handleQuotaExceeded($response->body());
             throw new Exception("Failed to match candidate: " . $response->body());
         } catch (Exception $e) {
-            Log::error("OpenAIService::matchAndAnalyze: Candidate matching exception: " . $e->getMessage() . " - Falling back to Mock Candidate Matching.");
+            Log::error("OpenAIService::matchAndAnalyze: Candidate matching exception: " . $e->getMessage());
             $this->handleQuotaExceeded($e->getMessage());
-            return $this->mockMatching($jobAnalysis, $resumeData);
+            throw $e;
         }
     }
 
@@ -358,10 +397,26 @@ class OpenAIService
         // Context-aware defaults if no specific keywords matched
         if (empty($required)) {
             $descLower = strtolower($description);
-            if (str_contains($descLower, 'electronics') || str_contains($descLower, 'embedded') || str_contains($descLower, 'hardware') || str_contains($descLower, 'circuit') || str_contains($descLower, 'microcontroller') || str_contains($descLower, 'iot')) {
+            if (str_contains($descLower, 'electronics') || str_contains($descLower, 'embedded') || str_contains($descLower, 'hardware') || str_contains($descLower, 'circuit') || str_contains($descLower, 'microcontroller') || str_contains($descLower, 'iot') || str_contains($descLower, 'electrical')) {
                 $required = ['Microcontrollers', 'Circuits', 'Embedded Systems'];
                 $preferred = ['Arduino', 'PCB Design', 'ESP32'];
                 $certifications = ['Certified Embedded Systems Specialist', 'IoT Developer Certificate'];
+            } elseif (str_contains($descLower, 'solidworks') || str_contains($descLower, 'cad') || str_contains($descLower, 'mechanical') || str_contains($descLower, 'thermo') || str_contains($descLower, 'fluid')) {
+                $required = ['SolidWorks', 'CAD Design', 'Mechanical Design'];
+                $preferred = ['AutoCAD', 'Robotics'];
+                $certifications = ['Certified SolidWorks Associate (CSWA)', 'Autodesk Certified Professional'];
+            } elseif (str_contains($descLower, 'data') || str_contains($descLower, 'machine learning') || str_contains($descLower, 'deep learning') || str_contains($descLower, 'ai') || str_contains($descLower, 'pytorch') || str_contains($descLower, 'tensorflow')) {
+                $required = ['Python', 'Machine Learning', 'Data Science'];
+                $preferred = ['PyTorch', 'TensorFlow', 'SQL'];
+                $certifications = ['Google Professional Data Engineer', 'AWS Certified Machine Learning'];
+            } elseif (str_contains($descLower, 'devops') || str_contains($descLower, 'kubernetes') || str_contains($descLower, 'cloud') || str_contains($descLower, 'terraform') || str_contains($descLower, 'aws')) {
+                $required = ['AWS', 'Docker', 'Kubernetes'];
+                $preferred = ['Terraform', 'CI/CD', 'Linux'];
+                $certifications = ['AWS Certified Solutions Architect', 'Certified Kubernetes Administrator (CKA)'];
+            } elseif (str_contains($descLower, 'project') || str_contains($descLower, 'product') || str_contains($descLower, 'manager') || str_contains($descLower, 'agile') || str_contains($descLower, 'scrum')) {
+                $required = ['Project Management', 'Agile', 'Scrum'];
+                $preferred = ['Communication', 'Jira'];
+                $certifications = ['Project Management Professional (PMP)', 'Certified ScrumMaster (CSM)'];
             } else {
                 $required = ['PHP', 'Laravel', 'MySQL'];
                 $preferred = ['AWS', 'Vue.js'];
@@ -443,6 +498,9 @@ class OpenAIService
             $name = 'Jane Doe';
         }
 
+        $lowerName = strtolower($name);
+        $lowerText = strtolower($text);
+
         // Find candidate skills in text
         $allSkills = self::$mockSkills;
         
@@ -457,8 +515,16 @@ class OpenAIService
         
         if (empty($skills)) {
             $textLower = strtolower($text);
-            if (str_contains($textLower, 'electronics') || str_contains($textLower, 'embedded') || str_contains($textLower, 'hardware') || str_contains($textLower, 'circuit') || str_contains($textLower, 'microcontroller') || str_contains($textLower, 'iot')) {
+            if (str_contains($textLower, 'electronics') || str_contains($textLower, 'embedded') || str_contains($textLower, 'hardware') || str_contains($textLower, 'circuit') || str_contains($textLower, 'microcontroller') || str_contains($textLower, 'iot') || str_contains($textLower, 'electrical')) {
                 $skills = ['Microcontrollers', 'Circuits', 'IoT', 'Embedded Systems'];
+            } elseif (str_contains($textLower, 'solidworks') || str_contains($textLower, 'cad') || str_contains($textLower, 'mechanical') || str_contains($textLower, 'design')) {
+                $skills = ['SolidWorks', 'CAD Design', 'Mechanical Design', 'Robotics'];
+            } elseif (str_contains($textLower, 'data') || str_contains($textLower, 'machine learning') || str_contains($textLower, 'deep learning') || str_contains($textLower, 'ai') || str_contains($textLower, 'python')) {
+                $skills = ['Python', 'Data Science', 'Machine Learning', 'SQL'];
+            } elseif (str_contains($textLower, 'devops') || str_contains($textLower, 'kubernetes') || str_contains($textLower, 'cloud') || str_contains($textLower, 'terraform')) {
+                $skills = ['AWS', 'Docker', 'Kubernetes', 'Linux'];
+            } elseif (str_contains($textLower, 'project') || str_contains($textLower, 'product') || str_contains($textLower, 'manager') || str_contains($textLower, 'agile') || str_contains($textLower, 'scrum')) {
+                $skills = ['Project Management', 'Agile', 'Scrum', 'Communication'];
             } else {
                 $skills = ['PHP', 'Laravel', 'REST API', 'Git'];
             }
@@ -472,14 +538,29 @@ class OpenAIService
             Log::debug("OpenAIService::mockResumeParsing: Inferred experience years from text: {$experience}");
         }
 
+        $expectedSalary = 'Not specified';
+        $noticePeriod = 'Not specified';
+        $currentCompany = 'Not specified';
+        $remotePreference = 'Not specified';
+        $visaStatus = 'Not specified';
+
+        $workExperience = [];
+        $education = ['B.S. in Engineering, State University'];
+
         $parsedData = [
             'name' => $name,
             'email' => $email,
             'phone' => $phone,
             'skills' => $skills,
             'experience_years' => $experience,
-            'education' => ['B.S. in Engineering, State University'],
+            'education' => $education,
             'summary' => 'Accomplished engineer skilled in ' . implode(', ', $skills) . ' with ' . $experience . ' years of hands-on experience.',
+            'expected_salary' => $expectedSalary,
+            'notice_period' => $noticePeriod,
+            'current_company' => $currentCompany,
+            'remote_preference' => $remotePreference,
+            'visa_status' => $visaStatus,
+            'work_experience' => $workExperience,
         ];
 
         Log::debug("OpenAIService::mockResumeParsing: Final mock parsed payload: " . json_encode($parsedData));
@@ -589,6 +670,199 @@ class OpenAIService
 
         Log::debug("OpenAIService::mockMatching: Mock evaluation details generated. Questions generated count: " . count($questions));
         return $matchResult;
+    }
+
+    /**
+     * Interview Evaluation Agent: Generate scores and recommendations from interview notes.
+     */
+    public function evaluateInterviewNotes(string $jobTitle, string $candidateName, string $notes): array
+    {
+        Log::info("OpenAIService::evaluateInterviewNotes: Analyzing notes for candidate: {$candidateName}, Job: {$jobTitle}");
+
+        $startTime = microtime(true);
+
+        if ($this->isMockMode()) {
+            throw new Exception("API key is not configured for provider {$this->provider}. Mock mode is disabled.");
+        }
+
+        $prompt = "You are an expert technical interviewer evaluating notes from a recent candidate interview.\n\n" .
+                  "Job Title: {$jobTitle}\n" .
+                  "Candidate: {$candidateName}\n" .
+                  "Recruiter's Interview Notes:\n\"{$notes}\"\n\n" .
+                  "Please analyze the notes and score the candidate (on a scale of 0 to 100) on the following areas:\n" .
+                  "1. technical_score: Technical proficiency, problem-solving, and domain knowledge mentioned.\n" .
+                  "2. communication_score: Clarity, articulation, and responsiveness.\n" .
+                  "3. leadership_score: Collaborative skills, ownership, and cultural alignment.\n\n" .
+                  "Also provide a recommendation (one of: 'Strong Hire', 'Hire', 'Maybe', 'No Hire') and an evaluation summary.\n\n" .
+                  "You MUST return a JSON object with the exact keys:\n" .
+                  "{\n" .
+                  "  \"technical_score\": float,\n" .
+                  "  \"communication_score\": float,\n" .
+                  "  \"leadership_score\": float,\n" .
+                  "  \"recommendation\": \"string\",\n" .
+                  "  \"summary\": \"string\"\n" .
+                  "}\n" .
+                  "Do not wrap output in markdown code blocks.";
+
+        try {
+            Log::debug("OpenAIService::evaluateInterviewNotes: Sending POST request to {$this->provider} Chat Completion (model: {$this->model})...");
+            $response = Http::withHeaders([
+                'Authorization' => 'Bearer ' . $this->apiKey,
+                'Content-Type' => 'application/json',
+            ])->post($this->baseUrl . '/chat/completions', [
+                'model' => $this->model,
+                'messages' => [
+                    ['role' => 'system', 'content' => 'You are an expert technical interviewer.'],
+                    ['role' => 'user', 'content' => $prompt]
+                ],
+                'temperature' => 0.1,
+                'response_format' => ['type' => 'json_object']
+            ]);
+
+            $duration = round(microtime(true) - $startTime, 3);
+
+            if ($response->successful()) {
+                $this->clearQuotaExceeded();
+                $rawContent = $response->json('choices.0.message.content');
+                Log::debug("OpenAIService::evaluateInterviewNotes: Response received: {$rawContent}");
+                
+                $data = json_decode($rawContent, true);
+                if (is_array($data)) {
+                    Log::info("OpenAIService::evaluateInterviewNotes: Completed successfully in {$duration}s.");
+                    return $data;
+                }
+            }
+            $this->handleQuotaExceeded($response->body());
+            throw new Exception("Failed to evaluate notes: " . $response->body());
+        } catch (Exception $e) {
+            Log::error("OpenAIService::evaluateInterviewNotes: Exception: " . $e->getMessage());
+            $this->handleQuotaExceeded($e->getMessage());
+            throw $e;
+        }
+    }
+
+    /**
+     * Offer Recommendation Agent: Suggest salary and benefits.
+     */
+    public function generateOfferRecommendation(array $candidateDetails, array $jobDetails): array
+    {
+        Log::info("OpenAIService::generateOfferRecommendation: Generating offer suggestions for {$candidateDetails['name']}");
+
+        $startTime = microtime(true);
+
+        if ($this->isMockMode()) {
+            throw new Exception("API key is not configured for provider {$this->provider}. Mock mode is disabled.");
+        }
+
+        $prompt = "You are an expert HR compensation advisor recommending an employment offer for a candidate.\n\n" .
+                  "Candidate Details:\n" . json_encode($candidateDetails, JSON_PRETTY_PRINT) . "\n\n" .
+                  "Job details:\n" . json_encode($jobDetails, JSON_PRETTY_PRINT) . "\n\n" .
+                  "Based on the candidate's score, experience years, expected salary, and job requirements, generate a suggested salary range (in LPA or appropriate currency e.g. ₹18-20 LPA), a professional compensation justification, and recommended benefits.\n\n" .
+                  "You MUST return a JSON object with the exact keys:\n" .
+                  "{\n" .
+                  "  \"suggested_salary\": \"string\",\n" .
+                  "  \"justification\": \"string\",\n" .
+                  "  \"benefits\": [\"string\"]\n" .
+                  "}\n" .
+                  "Do not wrap output in markdown code blocks.";
+
+        try {
+            Log::debug("OpenAIService::generateOfferRecommendation: Sending POST request to {$this->provider} Chat Completion...");
+            $response = Http::withHeaders([
+                'Authorization' => 'Bearer ' . $this->apiKey,
+                'Content-Type' => 'application/json',
+            ])->post($this->baseUrl . '/chat/completions', [
+                'model' => $this->model,
+                'messages' => [
+                    ['role' => 'system', 'content' => 'You are an expert compensation advisor.'],
+                    ['role' => 'user', 'content' => $prompt]
+                ],
+                'temperature' => 0.2,
+                'response_format' => ['type' => 'json_object']
+            ]);
+
+            $duration = round(microtime(true) - $startTime, 3);
+
+            if ($response->successful()) {
+                $this->clearQuotaExceeded();
+                $rawContent = $response->json('choices.0.message.content');
+                Log::debug("OpenAIService::generateOfferRecommendation: Response: {$rawContent}");
+                
+                $data = json_decode($rawContent, true);
+                if (is_array($data)) {
+                    Log::info("OpenAIService::generateOfferRecommendation: Completed successfully in {$duration}s.");
+                    return $data;
+                }
+            }
+            $this->handleQuotaExceeded($response->body());
+            throw new Exception("Failed to generate offer: " . $response->body());
+        } catch (Exception $e) {
+            Log::error("OpenAIService::generateOfferRecommendation: Exception: " . $e->getMessage());
+            $this->handleQuotaExceeded($e->getMessage());
+            throw $e;
+        }
+    }
+
+    /**
+     * Recruiter Copilot Agent: Parse natural language queries and map them to filter candidates or direct answers.
+     */
+    public function queryCopilot(string $query, array $candidates): array
+    {
+        Log::info("OpenAIService::queryCopilot: Processing query: '{$query}' against " . count($candidates) . " candidates.");
+
+        $startTime = microtime(true);
+
+        if ($this->isMockMode()) {
+            throw new Exception("API key is not configured for provider {$this->provider}. Mock mode is disabled.");
+        }
+
+        $prompt = "You are an AI Recruitment Copilot. You are asked a query about a candidate pool.\n\n" .
+                  "Query: \"{$query}\"\n\n" .
+                  "Candidate Pool Data:\n" . json_encode($candidates, JSON_PRETTY_PRINT) . "\n\n" .
+                  "Review the query and candidate list. Filter the candidates that match the recruiter's command (e.g. skills, experience, expected salary, notice period). " .
+                  "Generate a helpful natural language summary response answering their question in markdown, and return the list of matched candidate IDs.\n\n" .
+                  "You MUST return a JSON object with the exact keys:\n" .
+                  "{\n" .
+                  "  \"answer\": \"string in markdown format\",\n" .
+                  "  \"matched_candidate_ids\": [integer]\n" .
+                  "}\n" .
+                  "Do not wrap output in markdown code blocks.";
+
+        try {
+            Log::debug("OpenAIService::queryCopilot: Sending POST request to {$this->provider} Chat Completion...");
+            $response = Http::withHeaders([
+                'Authorization' => 'Bearer ' . $this->apiKey,
+                'Content-Type' => 'application/json',
+            ])->post($this->baseUrl . '/chat/completions', [
+                'model' => $this->model,
+                'messages' => [
+                    ['role' => 'system', 'content' => 'You are an AI Recruitment Copilot.'],
+                    ['role' => 'user', 'content' => $prompt]
+                ],
+                'temperature' => 0.1,
+                'response_format' => ['type' => 'json_object']
+            ]);
+
+            $duration = round(microtime(true) - $startTime, 3);
+
+            if ($response->successful()) {
+                $this->clearQuotaExceeded();
+                $rawContent = $response->json('choices.0.message.content');
+                Log::debug("OpenAIService::queryCopilot: Response: {$rawContent}");
+                
+                $data = json_decode($rawContent, true);
+                if (is_array($data)) {
+                    Log::info("OpenAIService::queryCopilot: Completed successfully in {$duration}s.");
+                    return $data;
+                }
+            }
+            $this->handleQuotaExceeded($response->body());
+            throw new Exception("Failed to query copilot: " . $response->body());
+        } catch (Exception $e) {
+            Log::error("OpenAIService::queryCopilot: Exception: " . $e->getMessage());
+            $this->handleQuotaExceeded($e->getMessage());
+            throw $e;
+        }
     }
 
     /**

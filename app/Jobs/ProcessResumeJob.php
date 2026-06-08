@@ -89,14 +89,127 @@ class ProcessResumeJob implements ShouldQueue
             $step3Duration = round(microtime(true) - $step3Start, 3);
             Log::info("ProcessResumeJob [Step 3/4]: Resume Parser completed in {$step3Duration}s. Extracted candidate details: [Name: " . ($parsedData['name'] ?? 'N/A') . ", Email: " . ($parsedData['email'] ?? 'N/A') . ", Experience: " . ($parsedData['experience_years'] ?? '0') . " years]");
             
-            // Update candidate details from parsed data
-            $this->candidate->update([
-                'name' => $parsedData['name'] ?? $this->candidate->name ?: 'Unknown Candidate',
-                'email' => $parsedData['email'] ?? $this->candidate->email,
-                'phone' => $parsedData['phone'] ?? $this->candidate->phone,
-                'parsed_data' => $parsedData,
-            ]);
-            Log::debug("ProcessResumeJob: Candidate parsed_data fields updated in database.");
+            // Update candidate details from parsed data (with Versioning & Duplicate Rejection)
+            $email = $parsedData['email'] ?? null;
+            if ($email) {
+                // Find other candidate scores for this job where candidate has the same email
+                $existingScores = CandidateScore::where('recruitment_job_id', $this->recruitmentJob->id)
+                    ->where('candidate_id', '!=', $this->candidate->id)
+                    ->whereHas('candidate', function ($query) use ($email) {
+                        $query->where('email', $email);
+                    })
+                    ->with('candidate')
+                    ->get();
+
+                if ($existingScores->isNotEmpty()) {
+                    // Check for exact duplicate (same file_hash)
+                    $exactDuplicateScore = $existingScores->first(function ($score) {
+                        return $score->candidate->file_hash === $this->candidate->file_hash;
+                    });
+
+                    if ($exactDuplicateScore) {
+                        // Reject! Exact duplicate.
+                        $candidateScore->update([
+                            'status' => 'failed',
+                            'analysis' => [
+                                'error' => 'Duplicate resume uploaded. Candidate already has this exact resume version evaluated.'
+                            ]
+                        ]);
+                        
+                        // Clean up the candidate file and DB record
+                        if (Storage::exists($this->candidate->resume_path)) {
+                            Storage::delete($this->candidate->resume_path);
+                        }
+                        $this->candidate->delete();
+                        
+                        \App\Models\AuditLog::logAction(
+                            'Resume Upload Rejected',
+                            "Rejected duplicate resume upload for {$parsedData['name']} (email: {$email}) on job: {$this->recruitmentJob->title}"
+                        );
+                        
+                        Log::info("ProcessResumeJob: Exact duplicate detected for email '{$email}' on Job ID {$this->recruitmentJob->id}. Rejected upload.");
+                        return;
+                    }
+
+                    // Modified resume -> New Version
+                    $maxVersion = $existingScores->max(function ($score) {
+                        return $score->candidate->version;
+                    }) ?? 1;
+
+                    $newVersion = $maxVersion + 1;
+
+                    // Update current candidate fields
+                    $this->candidate->update([
+                        'name' => $parsedData['name'] ?? $this->candidate->name ?: 'Unknown Candidate',
+                        'email' => $email,
+                        'phone' => $parsedData['phone'] ?? $this->candidate->phone,
+                        'parsed_data' => $parsedData,
+                        'expected_salary' => $parsedData['expected_salary'] ?? 'Not specified',
+                        'notice_period' => $parsedData['notice_period'] ?? 'Not specified',
+                        'current_company' => $parsedData['current_company'] ?? 'Not specified',
+                        'remote_preference' => $parsedData['remote_preference'] ?? 'Not specified',
+                        'visa_status' => $parsedData['visa_status'] ?? 'Not specified',
+                        'version' => $newVersion,
+                        'uploaded_at' => now(),
+                        'is_latest' => true,
+                    ]);
+
+                    // Set all older candidate versions for this job to is_latest = false
+                    foreach ($existingScores as $oldScore) {
+                        $oldScore->candidate->update(['is_latest' => false]);
+                    }
+
+                    \App\Models\AuditLog::logAction(
+                        'Resume Version Updated',
+                        "Uploaded new resume version (v{$newVersion}) for {$parsedData['name']} (email: {$email}) on job: {$this->recruitmentJob->title}"
+                    );
+
+                    Log::info("ProcessResumeJob: Modified resume detected for email '{$email}' on Job ID {$this->recruitmentJob->id}. Incremented to v{$newVersion}.");
+
+                } else {
+                    // This is the first upload of this candidate for this job
+                    $this->candidate->update([
+                        'name' => $parsedData['name'] ?? $this->candidate->name ?: 'Unknown Candidate',
+                        'email' => $email,
+                        'phone' => $parsedData['phone'] ?? $this->candidate->phone,
+                        'parsed_data' => $parsedData,
+                        'expected_salary' => $parsedData['expected_salary'] ?? 'Not specified',
+                        'notice_period' => $parsedData['notice_period'] ?? 'Not specified',
+                        'current_company' => $parsedData['current_company'] ?? 'Not specified',
+                        'remote_preference' => $parsedData['remote_preference'] ?? 'Not specified',
+                        'visa_status' => $parsedData['visa_status'] ?? 'Not specified',
+                        'version' => 1,
+                        'uploaded_at' => now(),
+                        'is_latest' => true,
+                    ]);
+
+                    \App\Models\AuditLog::logAction(
+                        'Resume Uploaded',
+                        "Uploaded candidate resume for {$parsedData['name']} (email: {$email}) on job: {$this->recruitmentJob->title}"
+                    );
+                }
+            } else {
+                // Email not parsed, treat as standard version 1
+                $this->candidate->update([
+                    'name' => $parsedData['name'] ?? $this->candidate->name ?: 'Unknown Candidate',
+                    'phone' => $parsedData['phone'] ?? $this->candidate->phone,
+                    'parsed_data' => $parsedData,
+                    'expected_salary' => $parsedData['expected_salary'] ?? 'Not specified',
+                    'notice_period' => $parsedData['notice_period'] ?? 'Not specified',
+                    'current_company' => $parsedData['current_company'] ?? 'Not specified',
+                    'remote_preference' => $parsedData['remote_preference'] ?? 'Not specified',
+                    'visa_status' => $parsedData['visa_status'] ?? 'Not specified',
+                    'version' => 1,
+                    'uploaded_at' => now(),
+                    'is_latest' => true,
+                ]);
+
+                \App\Models\AuditLog::logAction(
+                    'Resume Uploaded',
+                    "Uploaded candidate resume for {$this->candidate->name} on job: {$this->recruitmentJob->title}"
+                );
+            }
+            Log::debug("ProcessResumeJob: Candidate parsed_data fields and versioning updated in database.");
 
             // 4. Candidate Matching, Recruiter Assistant, and Interview Question Agents
             // If the job has not been analyzed yet, analyze it now
@@ -137,6 +250,32 @@ class ProcessResumeJob implements ShouldQueue
                 ],
                 'status' => 'completed',
             ]);
+
+            // Run Agent 1: Auto Shortlisting Agent
+            $scoreVal = $candidateScore->score;
+            $emailService = app(\App\Services\EmailCommunicationService::class);
+
+            if ($scoreVal > 85) {
+                $candidateScore->update([
+                    'candidate_status' => 'Shortlisted',
+                    'status_updated_at' => now(),
+                ]);
+                $emailService->sendShortlistEmail($candidateScore);
+                Log::info("Auto Shortlisting Agent: Candidate ID {$this->candidate->id} automatically SHORTLISTED (Score: {$scoreVal}%)");
+            } elseif ($scoreVal >= 70) {
+                $candidateScore->update([
+                    'candidate_status' => 'Screening', // Human Review
+                    'status_updated_at' => now(),
+                ]);
+                Log::info("Auto Shortlisting Agent: Candidate ID {$this->candidate->id} routed to HUMAN REVIEW (Score: {$scoreVal}%)");
+            } else {
+                $candidateScore->update([
+                    'candidate_status' => 'Rejected',
+                    'status_updated_at' => now(),
+                ]);
+                $emailService->sendRejectionEmail($candidateScore);
+                Log::info("Auto Shortlisting Agent: Candidate ID {$this->candidate->id} automatically REJECTED (Score: {$scoreVal}%)");
+            }
 
             $totalJobDuration = round(microtime(true) - $jobStartTime, 3);
             Log::info("ProcessResumeJob: Evaluation completed successfully in {$totalJobDuration}s. Results: [Score: {$candidateScore->score}%, Grade: {$candidateScore->recommendation}]");

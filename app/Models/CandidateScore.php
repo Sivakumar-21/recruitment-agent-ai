@@ -19,6 +19,10 @@ class CandidateScore extends Model
         'education_match',
         'recommendation',
         'status',
+        'candidate_status',
+        'status_updated_at',
+        'candidate_notes',
+        'candidate_rating',
         'analysis',
     ];
 
@@ -27,6 +31,8 @@ class CandidateScore extends Model
         'skill_match' => 'float',
         'experience_match' => 'float',
         'education_match' => 'float',
+        'status_updated_at' => 'datetime',
+        'candidate_rating' => 'integer',
         'analysis' => 'array',
     ];
 
@@ -38,5 +44,10 @@ class CandidateScore extends Model
     public function candidate(): BelongsTo
     {
         return $this->belongsTo(Candidate::class, 'candidate_id');
+    }
+
+    public function interviews(): \Illuminate\Database\Eloquent\Relations\HasMany
+    {
+        return $this->hasMany(Interview::class);
     }
 }

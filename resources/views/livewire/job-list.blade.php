@@ -19,36 +19,68 @@
     @endif
 
     <div class="grid-2">
-        <!-- Create Job Card -->
-        <div class="card">
-            <h2 style="font-size: 1.25rem; font-weight: 600; margin-bottom: 1.5rem; display: flex; align-items: center; gap: 0.5rem;">
-                <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-                    <line x1="12" y1="5" x2="12" y2="19"></line>
-                    <line x1="5" y1="12" x2="19" y2="12"></line>
-                </svg>
-                Post New Job
-            </h2>
-            
-            <form wire:submit.prevent="createJob">
-                <div class="form-group">
-                    <label class="form-label">Job Title</label>
-                    <input type="text" wire:model="title" class="form-control" placeholder="e.g. Laravel Developer">
-                    @error('title') <span style="color: var(--danger); font-size: 0.85rem; margin-top: 0.25rem; display: block;">{{ $message }}</span> @enderror
-                </div>
+        <!-- Left Side: Create Job & Activity Timeline -->
+        <div style="display: flex; flex-direction: column; gap: 1.5rem;">
+            <!-- Create Job Card -->
+            <div class="card">
+                <h2 style="font-size: 1.25rem; font-weight: 600; margin-bottom: 1.5rem; display: flex; align-items: center; gap: 0.5rem;">
+                    <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                        <line x1="12" y1="5" x2="12" y2="19"></line>
+                        <line x1="5" y1="12" x2="19" y2="12"></line>
+                    </svg>
+                    Post New Job
+                </h2>
+                
+                <form wire:submit.prevent="createJob">
+                    <div class="form-group">
+                        <label class="form-label">Job Title</label>
+                        <input type="text" wire:model="title" class="form-control" placeholder="e.g. Laravel Developer">
+                        @error('title') <span style="color: var(--danger); font-size: 0.85rem; margin-top: 0.25rem; display: block;">{{ $message }}</span> @enderror
+                    </div>
 
-                <div class="form-group" style="margin-bottom: 1.75rem;">
-                    <label class="form-label">Job Description</label>
-                    <textarea wire:model="description" class="form-control" placeholder="Paste the full job requirements, skills needed, and experience required..."></textarea>
-                    @error('description') <span style="color: var(--danger); font-size: 0.85rem; margin-top: 0.25rem; display: block;">{{ $message }}</span> @enderror
-                </div>
+                    <div class="form-group" style="margin-bottom: 1.75rem;">
+                        <label class="form-label">Job Description</label>
+                        <textarea wire:model="description" class="form-control" placeholder="Paste the full job requirements, skills needed, and experience required..."></textarea>
+                        @error('description') <span style="color: var(--danger); font-size: 0.85rem; margin-top: 0.25rem; display: block;">{{ $message }}</span> @enderror
+                    </div>
 
-                <button type="submit" class="btn btn-primary" style="width: 100%;" wire:loading.attr="disabled">
-                    <span wire:loading.remove wire:target="createJob">Analyze & Create Job</span>
-                    <span wire:loading wire:target="createJob" class="flex-center" style="gap: 0.5rem;">
-                        <span class="spinner"></span> Analyzing Job Description...
-                    </span>
-                </button>
-            </form>
+                    <button type="submit" class="btn btn-primary" style="width: 100%;" wire:loading.attr="disabled">
+                        <span wire:loading.remove wire:target="createJob">Analyze & Create Job</span>
+                        <span wire:loading wire:target="createJob" class="flex-center" style="gap: 0.5rem;">
+                            <span class="spinner"></span> Analyzing Job Description...
+                        </span>
+                    </button>
+                </form>
+            </div>
+
+            <!-- Activity Stream Card -->
+            <div class="card">
+                <h2 style="font-size: 1.25rem; font-weight: 600; margin-bottom: 1.5rem; display: flex; align-items: center; gap: 0.5rem;">
+                    📋 Activity Timeline
+                </h2>
+                
+                <div style="display: flex; flex-direction: column; gap: 1rem; max-height: 400px; overflow-y: auto; padding-right: 0.5rem;">
+                    @forelse($auditLogs as $log)
+                        <div style="border-left: 2px solid var(--primary); padding-left: 1rem; position: relative; padding-bottom: 0.5rem;">
+                            <div style="position: absolute; left: -6px; top: 4px; width: 10px; height: 10px; border-radius: 50%; background: var(--primary); border: 2px solid var(--bg-dark);"></div>
+                            <div style="display: flex; justify-content: space-between; font-size: 0.8rem; color: var(--text-muted); margin-bottom: 0.2rem;">
+                                <strong>{{ $log->username }}</strong>
+                                <span>{{ $log->created_at->diffForHumans() }}</span>
+                            </div>
+                            <div style="font-size: 0.9rem; font-weight: 600; color: var(--text-main);">
+                                {{ $log->action }}
+                            </div>
+                            <div style="font-size: 0.85rem; color: var(--text-muted); margin-top: 0.15rem;">
+                                {{ $log->description }}
+                            </div>
+                        </div>
+                    @empty
+                        <div style="font-size: 0.85rem; color: var(--text-muted); text-align: center; padding: 2rem 0;">
+                            No actions logged yet.
+                        </div>
+                    @endforelse
+                </div>
+            </div>
         </div>
 
         <!-- Jobs List Card -->

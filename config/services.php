@@ -39,4 +39,12 @@ return [
         'key' => env('OPENAI_API_KEY'),
     ],
 
+    'grok' => [
+        'key' => env('GROK_API_KEY'),
+        'base_url' => env('GROK_BASE_URL', 'https://api.x.ai/v1'),
+        'model' => env('GROK_MODEL', 'grok-beta'),
+    ],
+
+    'llm_provider' => env('LLM_PROVIDER', 'openai'),
+
 ];
